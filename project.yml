@@ -43,3 +43,16 @@ targets:
         com.apple.security.app-sandbox: false
         com.apple.security.network.server: true
         com.apple.security.network.client: true
+
+  ConsolentTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ConsolentTests
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Consolent
