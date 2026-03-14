@@ -34,6 +34,10 @@ final class APIServer: ObservableObject {
         app.http.server.configuration.port = config.apiPort
         app.http.server.configuration.serverName = "Consolent"
 
+        // 요청 body 크기 제한 (기본 16KB → 10MB)
+        // OpenAI 호환 클라이언트가 대화 히스토리를 포함해 보내므로 충분히 확보
+        app.routes.defaultMaxBodySize = "10mb"
+
         // JSON 날짜 포맷
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -277,9 +281,11 @@ final class APIServer: ObservableObject {
             let body = try req.content.decode(OpenAIChatRequest.self)
 
             // 마지막 user 메시지 추출
-            guard let lastUserMessage = body.messages.last(where: { $0.role == "user" })?.content else {
+            guard let lastUserMsg = body.messages.last(where: { $0.role == "user" }),
+                  !lastUserMsg.textContent.isEmpty else {
                 throw Abort(.badRequest, reason: "No user message found")
             }
+            let lastUserMessage = lastUserMsg.textContent
 
             // 세션 가져오기 또는 생성
             let session = try await getOrCreateDefaultSession()
@@ -288,16 +294,82 @@ final class APIServer: ObservableObject {
             let timeout = TimeInterval(body.timeout ?? 300)
             let result = try await session.sendMessage(text: lastUserMessage, timeout: timeout)
 
-            // OpenAI 형식으로 변환
+            let completionId = "chatcmpl-\(result.messageId)"
+            let created = Int(Date().timeIntervalSince1970)
+            let modelId = session.adapter.modelId
+            let responseText = result.response.result
+
+            // stream 모드: SSE (Server-Sent Events) 형식
+            if body.stream == true {
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+
+                // 1. role chunk
+                let roleChunk = OpenAIStreamChunk(
+                    id: completionId, object: "chat.completion.chunk",
+                    created: created, model: modelId,
+                    choices: [OpenAIStreamChoice(
+                        index: 0,
+                        delta: OpenAIStreamDelta(role: "assistant", content: nil),
+                        finishReason: nil
+                    )]
+                )
+
+                // 2. content chunk (전체 응답)
+                let contentChunk = OpenAIStreamChunk(
+                    id: completionId, object: "chat.completion.chunk",
+                    created: created, model: modelId,
+                    choices: [OpenAIStreamChoice(
+                        index: 0,
+                        delta: OpenAIStreamDelta(role: nil, content: responseText),
+                        finishReason: nil
+                    )]
+                )
+
+                // 3. finish chunk
+                let finishChunk = OpenAIStreamChunk(
+                    id: completionId, object: "chat.completion.chunk",
+                    created: created, model: modelId,
+                    choices: [OpenAIStreamChoice(
+                        index: 0,
+                        delta: OpenAIStreamDelta(role: nil, content: nil),
+                        finishReason: "stop"
+                    )]
+                )
+
+                var sseBody = ""
+                if let d = try? encoder.encode(roleChunk), let s = String(data: d, encoding: .utf8) {
+                    sseBody += "data: \(s)\n\n"
+                }
+                if let d = try? encoder.encode(contentChunk), let s = String(data: d, encoding: .utf8) {
+                    sseBody += "data: \(s)\n\n"
+                }
+                if let d = try? encoder.encode(finishChunk), let s = String(data: d, encoding: .utf8) {
+                    sseBody += "data: \(s)\n\n"
+                }
+                sseBody += "data: [DONE]\n\n"
+
+                return Response(
+                    status: .ok,
+                    headers: [
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive"
+                    ],
+                    body: .init(string: sseBody)
+                )
+            }
+
+            // 비-stream 모드: 일반 JSON
             let openAIResponse = OpenAIChatResponse(
-                id: "chatcmpl-\(result.messageId)",
+                id: completionId,
                 object: "chat.completion",
-                created: Int(Date().timeIntervalSince1970),
-                model: session.adapter.modelId,
+                created: created,
+                model: modelId,
                 choices: [
                     OpenAIChoice(
                         index: 0,
-                        message: OpenAIChatMessage(role: "assistant", content: result.response.result),
+                        message: OpenAIChatMessage(role: "assistant", content: .string(responseText)),
                         finishReason: "stop"
                     )
                 ],
@@ -514,11 +586,81 @@ struct OpenAIChatRequest: Content {
     var temperature: Double?
     var maxTokens: Int?
     var timeout: Int?
+    // OpenAI 호환 클라이언트가 보내는 추가 필드 (무시하되 디코딩 에러 방지)
+    var topP: Double?
+    var n: Int?
+    var stop: AnyCodableValue?
+    var presencePenalty: Double?
+    var frequencyPenalty: Double?
+    var user: String?
 }
 
+/// OpenAI content는 문자열 또는 배열 형태 모두 가능.
+/// "content": "hello"  또는  "content": [{"type":"text","text":"hello"}]
 struct OpenAIChatMessage: Content {
     let role: String
-    let content: String
+    let content: MessageContent?
+
+    /// 텍스트 추출 헬퍼
+    var textContent: String {
+        content?.text ?? ""
+    }
+}
+
+/// 문자열 / 배열 양쪽 모두 디코딩 가능한 content 타입
+enum MessageContent: Codable {
+    case string(String)
+    case parts([ContentPart])
+
+    var text: String {
+        switch self {
+        case .string(let s): return s
+        case .parts(let parts):
+            return parts
+                .filter { $0.type == "text" }
+                .compactMap { $0.text }
+                .joined(separator: "\n")
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let str = try? container.decode(String.self) {
+            self = .string(str)
+        } else if let parts = try? container.decode([ContentPart].self) {
+            self = .parts(parts)
+        } else {
+            self = .string("")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try container.encode(s)
+        case .parts(let p): try container.encode(p)
+        }
+    }
+}
+
+struct ContentPart: Codable {
+    let type: String
+    var text: String?
+    var imageUrl: ImageURL?
+}
+
+struct ImageURL: Codable {
+    let url: String
+    var detail: String?
+}
+
+/// 타입을 알 수 없는 JSON 값을 무시하기 위한 래퍼
+struct AnyCodableValue: Codable {
+    init(from decoder: Decoder) throws {
+        // 어떤 값이든 디코딩만 하고 버림
+        _ = try? decoder.singleValueContainer()
+    }
+    func encode(to encoder: Encoder) throws {}
 }
 
 struct OpenAIChatResponse: Content {
@@ -540,6 +682,27 @@ struct OpenAIUsage: Content {
     let promptTokens: Int
     let completionTokens: Int
     let totalTokens: Int
+}
+
+// MARK: - OpenAI Streaming DTOs
+
+struct OpenAIStreamChunk: Codable {
+    let id: String
+    let object: String
+    let created: Int
+    let model: String
+    let choices: [OpenAIStreamChoice]
+}
+
+struct OpenAIStreamChoice: Codable {
+    let index: Int
+    let delta: OpenAIStreamDelta
+    let finishReason: String?
+}
+
+struct OpenAIStreamDelta: Codable {
+    let role: String?
+    let content: String?
 }
 
 struct OpenAIModelsResponse: Content {

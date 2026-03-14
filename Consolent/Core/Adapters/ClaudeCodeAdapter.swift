@@ -33,26 +33,35 @@ struct ClaudeCodeAdapter: CLIAdapter {
     // MARK: - Response Parsing
 
     func cleanResponse(_ screenText: String) -> String {
-        // Step 1: Null 문자 → 공백 대체 (SwiftTerm 빈 셀이 공백 역할)
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
+        // Step 1: Null 문자 제거 (SwiftTerm wide char 패딩)
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")
 
-        // Step 2: 환영 화면 박스 & TUI chrome 제거, 응답 본문 추출
+        // Step 2: 상태 머신으로 응답 본문만 추출
+        //   - phase 0: 초기 (환영 화면, 이전 대화 등)
+        //   - phase 1: 사용자 입력 감지됨 (❯/› 이후) → ⏺ 나올 때까지 스킵
+        //   - phase 2: 어시스턴트 응답 수집 중 (⏺ 이후)
         var responseLines: [String] = []
-        var foundResponseStart = false
+        var phase = 0  // 0=초기, 1=사용자입력구간, 2=어시스턴트응답
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
+            // 빈 줄
             if trimmed.isEmpty {
-                if foundResponseStart { responseLines.append("") }
+                if phase == 2 { responseLines.append("") }
                 continue
             }
 
-            // 박스 테두리 줄 — 응답 시작 전에만 필터링 (환영 화면)
-            if !foundResponseStart && Self.isBoxBorderLine(trimmed) {
+            // TUI chrome / 상태바 — 모든 phase에서 필터
+            if Self.matchesTUIChrome(trimmed) {
+                continue
+            }
+
+            // 박스 테두리 줄 (환영 화면)
+            if phase != 2 && Self.isBoxBorderLine(trimmed) {
                 continue
             }
 
@@ -61,48 +70,51 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 continue
             }
 
+            // 스피너
+            if Self.isSpinnerOnlyLine(trimmed) {
+                continue
+            }
+
             // 프롬프트만 있는 줄
             if trimmed == "›" || trimmed == "❯" || trimmed == ">" || trimmed == "$" {
                 continue
             }
 
-            // 사용자 입력 줄 — 매번 리셋하여 마지막 턴만 남긴다
+            // ── 사용자 입력 시작 (❯ / › 프롬프트) ──
             if trimmed.hasPrefix("❯ ") || trimmed.hasPrefix("› ") {
+                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
                 responseLines = []
-                foundResponseStart = true
+                phase = 1
                 continue
             }
 
-            // ⏺ 마커로 시작하면 응답 시작
-            if !foundResponseStart && trimmed.hasPrefix("⏺") {
-                foundResponseStart = true
-            }
+            // ── 어시스턴트 응답 시작 (⏺ 마커) ──
+            if trimmed.hasPrefix("⏺") {
+                phase = 2
 
-            // 푸터 / 상태 텍스트
-            if Self.matchesTUIChrome(trimmed) {
-                continue
-            }
-
-            // 스피너 문자만 있는 줄
-            if Self.isSpinnerOnlyLine(trimmed) {
-                continue
-            }
-
-            if foundResponseStart {
-                if trimmed.hasPrefix("⏺") {
-                    // TUI 도구 사용 표시 제거
-                    if trimmed.range(of: "⏺\\s+(Read|Wrote|Ran|Created|Updated|Deleted|Searched|Listed)\\s+.*\\(ctrl\\+", options: .regularExpression) != nil {
-                        continue
-                    }
-                    let stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
-                    responseLines.append(stripped)
-                } else {
-                    responseLines.append(line)
+                // TUI 도구 사용 표시 제거
+                if trimmed.range(of: "⏺\\s+(Read|Wrote|Ran|Created|Updated|Deleted|Searched|Listed)\\s+.*\\(ctrl\\+", options: .regularExpression) != nil {
+                    continue
                 }
+                let stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
+                if !stripped.isEmpty {
+                    responseLines.append(stripped)
+                }
+                continue
+            }
+
+            // phase 1: 사용자 입력 구간 → 스킵 (JSON 메타데이터, 에코된 입력 등)
+            if phase == 1 {
+                continue
+            }
+
+            // phase 2: 어시스턴트 응답 수집
+            if phase == 2 {
+                responseLines.append(line)
             }
         }
 
-        // 연속 빈 줄 정리
+        // Step 3: 연속 빈 줄 정리
         var result: [String] = []
         var lastWasEmpty = false
         for line in responseLines {
@@ -111,15 +123,46 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 if !lastWasEmpty { result.append("") }
                 lastWasEmpty = true
             } else {
-                result.append(line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression))
+                let trimmedTrailing = line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+                result.append(trimmedTrailing)
                 lastWasEmpty = false
             }
         }
 
-        return result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Step 4: CJK wide character 간격 보정
+        // SwiftTerm이 wide char 뒤에 padding space를 넣는 경우 제거
+        text = Self.fixCJKSpacing(text)
+
+        return text
     }
 
     // MARK: - Private Helpers
+
+    /// CJK 문자 사이의 불필요한 공백 제거
+    /// "안 녕 하 세 요" → "안녕하세요"
+    private static func fixCJKSpacing(_ text: String) -> String {
+        // CJK 문자 뒤에 공백 1개 + CJK 문자가 오는 패턴에서 공백 제거
+        // CJK Unified Ideographs, Hangul, Katakana, Hiragana 등
+        let cjkPattern = "([\u{1100}-\u{11FF}\u{2E80}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}\u{3000}-\u{30FF}\u{31F0}-\u{31FF}\u{FF00}-\u{FFEF}])\\s([\u{1100}-\u{11FF}\u{2E80}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}\u{FE30}-\u{FE4F}\u{3000}-\u{30FF}\u{31F0}-\u{31FF}\u{FF00}-\u{FFEF}])"
+
+        guard let regex = try? NSRegularExpression(pattern: cjkPattern) else { return text }
+
+        var result = text
+        // 반복 적용 (연속된 CJK 문자열: "가 나 다" → "가나 다" → "가나다")
+        var previous = ""
+        while result != previous {
+            previous = result
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "$1$2"
+            )
+        }
+
+        return result
+    }
 
     private static func isBoxBorderLine(_ text: String) -> Bool {
         let boxChars: Set<Character> = ["│", "║", "┃", "╭", "╮", "╰", "╯", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼"]
@@ -139,9 +182,20 @@ struct ClaudeCodeAdapter: CLIAdapter {
 
     private static func matchesTUIChrome(_ text: String) -> Bool {
         let lowered = text.lowercased()
-        let quickPatterns = ["esc to interrupt", "? for shortcuts", "api error"]
+        let quickPatterns = [
+            "esc to interrupt", "? for shortcuts", "api error",
+            "bypass permissions", "native installation",
+            "is not in", "shift+tab", "to cycle",
+        ]
         for pattern in quickPatterns {
             if lowered.contains(pattern) { return true }
+        }
+
+        // 상태바 삼각형 마커 (다양한 유니코드 변형)
+        // ⏵ (U+23F5), ▶ (U+25B6), ► (U+25BA), ⏸ (U+23F8), ▸ (U+25B8)
+        let statusBarChars: [Character] = ["⏵", "▶", "►", "⏸", "▸", "⏩"]
+        for ch in statusBarChars {
+            if text.contains(ch) { return true }
         }
 
         let statusPatterns = [
@@ -156,6 +210,7 @@ struct ClaudeCodeAdapter: CLIAdapter {
         let regexPatterns = [
             "^\\d+\\.?\\d*[kK]?\\s+tokens?$",
             "^\\d+\\s+tool\\s+use",
+            "^\\d+\\.?\\d*[kK]?\\s+tokens?.*\\d+\\.?\\d*[kK]?\\s+remaining",
         ]
         for pattern in regexPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {

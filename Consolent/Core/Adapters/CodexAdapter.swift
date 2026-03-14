@@ -31,7 +31,7 @@ struct CodexAdapter: CLIAdapter {
 
     func cleanResponse(_ screenText: String) -> String {
         // 기본 정리: null 문자 제거 + trailing 공백 제거
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")

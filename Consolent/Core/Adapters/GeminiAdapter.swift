@@ -30,7 +30,7 @@ struct GeminiAdapter: CLIAdapter {
     }
 
     func cleanResponse(_ screenText: String) -> String {
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")
