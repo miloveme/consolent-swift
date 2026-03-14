@@ -1,0 +1,44 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+xcuserdata/
+
+# XcodeGen (project.yml로 재생성 가능)
+*.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+Packages/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# App bundle
+*.app
+
+# Archives
+*.xcarchive
+
+# Playground
+*.playground/
+
+# IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment / Secrets
+.env
+*.pem
+*.p12
+*.key

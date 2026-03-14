@@ -1,0 +1,38 @@
+name: Consolent
+options:
+  bundleIdPrefix: com.consolent
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  groupSortPosition: top
+
+packages:
+  Vapor:
+    url: https://github.com/vapor/vapor.git
+    from: "4.92.0"
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: "1.2.0"
+
+targets:
+  Consolent:
+    type: application
+    platform: macOS
+    sources:
+      - path: Consolent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.consolent.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_FILE: Consolent/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Consolent/Consolent.entitlements
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+    dependencies:
+      - package: Vapor
+        product: Vapor
+      - package: SwiftTerm
+        product: SwiftTerm
+    entitlements:
+      path: Consolent/Consolent.entitlements
