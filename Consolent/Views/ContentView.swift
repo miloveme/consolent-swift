@@ -32,9 +32,6 @@ struct ContentView: View {
         .sheet(isPresented: $showNewSession) {
             newSessionSheet
         }
-        .onAppear {
-            newSessionCwd = config.defaultCwd
-        }
     }
 
     // MARK: - Sidebar
@@ -46,7 +43,12 @@ struct ContentView: View {
                 Text("Sessions")
                     .font(.headline)
                 Spacer()
-                Button(action: { showNewSession = true }) {
+                Button(action: {
+                    newSessionCwd = config.defaultCwd
+                    newSessionCliType = config.defaultCliType
+                    newSessionAutoApprove = false
+                    showNewSession = true
+                }) {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.plain)

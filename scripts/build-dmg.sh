@@ -1,11 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# ── 프로젝트 루트로 이동 (scripts/ 하위에서 실행해도 동작) ──
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${PROJECT_ROOT}"
+
 # ── Configuration ──
 APP_NAME="Consolent"
 SCHEME="Consolent"
 PROJECT="Consolent.xcodeproj"
-BUILD_DIR="$(pwd)/build"
+BUILD_DIR="${PROJECT_ROOT}/build"
 APP_PATH="${BUILD_DIR}/${APP_NAME}.app"
 DMG_NAME="${APP_NAME}.dmg"
 DMG_PATH="${BUILD_DIR}/${DMG_NAME}"
@@ -20,6 +25,18 @@ NC='\033[0m'
 step() { echo -e "\n${CYAN}── $1 ──${NC}"; }
 ok()   { echo -e "${GREEN}OK${NC} $1"; }
 fail() { echo -e "${RED}FAIL${NC} $1"; exit 1; }
+
+# ── Generate Xcode Project ──
+step "Generating Xcode project (xcodegen)"
+if command -v xcodegen &> /dev/null; then
+    xcodegen generate 2>&1
+    ok "Xcode project generated"
+else
+    if [ ! -d "${PROJECT}" ]; then
+        fail "xcodegen not found and ${PROJECT} does not exist. Install with: brew install xcodegen"
+    fi
+    echo "xcodegen not found, using existing ${PROJECT}"
+fi
 
 # ── Clean ──
 step "Clean previous build"

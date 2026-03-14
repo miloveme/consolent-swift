@@ -29,6 +29,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Consolent/Consolent.entitlements
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        DEAD_CODE_STRIPPING: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ENABLE_APP_SANDBOX: NO
     dependencies:
       - package: Vapor
         product: Vapor
@@ -36,3 +39,7 @@ targets:
         product: SwiftTerm
     entitlements:
       path: Consolent/Consolent.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.network.server: true
+        com.apple.security.network.client: true

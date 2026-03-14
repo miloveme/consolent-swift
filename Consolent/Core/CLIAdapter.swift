@@ -48,16 +48,57 @@ protocol CLIAdapter {
 // MARK: - Default Implementations
 
 extension CLIAdapter {
-    /// 바이너리 경로를 찾는다. defaultBinaryPaths → defaultBinaryName 순으로 검색.
+    /// 바이너리 경로를 찾는다.
+    /// 1) 하드코딩된 경로 확인
+    /// 2) 사용자 login shell의 `which`로 검색
+    /// 3) 바이너리 이름 폴백
     func findBinaryPath() -> String {
         let fm = FileManager.default
+
+        // 1. 하드코딩된 경로에서 검색
         for path in defaultBinaryPaths {
             let expanded = NSString(string: path).expandingTildeInPath
             if fm.isExecutableFile(atPath: expanded) {
                 return expanded
             }
         }
+
+        // 2. 사용자 login shell에서 which로 검색
+        //    독립 .app은 최소 PATH만 가지므로 login shell의 PATH를 활용
+        if let resolved = resolveViaLoginShell(defaultBinaryName) {
+            return resolved
+        }
+
         return defaultBinaryName
+    }
+
+    /// 사용자 login shell의 환경에서 바이너리 경로를 찾는다.
+    private func resolveViaLoginShell(_ binary: String) -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        let pipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-l", "-c", "which \(binary)"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let path, !path.isEmpty, process.terminationStatus == 0 {
+                return path
+            }
+        } catch {
+            // 무시 — 다음 폴백 사용
+        }
+
+        return nil
     }
 
     /// 기본 완료 감지: readySignal/processingSignal 기반
