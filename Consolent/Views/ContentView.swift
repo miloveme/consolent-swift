@@ -69,13 +69,10 @@ struct ContentView: View {
             } else {
                 List(selection: $sessionManager.selectedSessionId) {
                     ForEach(Array(sessionManager.sessions.values).sorted(by: { $0.createdAt < $1.createdAt })) { session in
-                        SessionRow(session: session)
+                        SessionRow(session: session, onClose: {
+                            sessionManager.deleteSession(id: session.id)
+                        })
                             .tag(session.id)
-                            .contextMenu {
-                                Button("Close Session") {
-                                    sessionManager.deleteSession(id: session.id)
-                                }
-                            }
                     }
                 }
                 .listStyle(.sidebar)
@@ -262,32 +259,60 @@ struct ContentView: View {
 
 struct SessionRow: View {
     @ObservedObject var session: Session
+    var onClose: () -> Void
+    @State private var isHovering = false
+    @State private var showCloseAlert = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text(session.config.cliType.displayName)
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 8, height: 8)
+                    Text(session.config.cliType.displayName)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.15))
+                        .cornerRadius(3)
+                    Text(session.id)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                }
+
+                Text(session.config.workingDirectory)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.15))
-                    .cornerRadius(3)
-                Text(session.id)
-                    .font(.system(.body, design: .monospaced))
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
-            Text(session.config.workingDirectory)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            Spacer()
+
+            if isHovering {
+                Button(action: { showCloseAlert = true }) {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close Session")
+            }
         }
         .padding(.vertical, 2)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .alert("세션 종료", isPresented: $showCloseAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("OK", role: .destructive) {
+                onClose()
+            }
+        } message: {
+            Text("\(session.config.cliType.displayName) 세션을 종료하시겠습니까?\nCLI 프로세스가 함께 종료됩니다.")
+        }
     }
 
     private var statusColor: Color {
