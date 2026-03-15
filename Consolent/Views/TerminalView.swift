@@ -115,19 +115,55 @@ struct TerminalViewWrapper: NSViewRepresentable {
 
 /// 세션이 없을 때 보여주는 빈 상태 뷰
 struct EmptyTerminalView: View {
+    @State private var isAnimating = false
+    
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "terminal")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary)
-            Text("No Active Session")
-                .font(.title2)
-                .foregroundColor(.secondary)
-            Text("Create a session via the + button or API")
-                .font(.body)
-                .foregroundColor(.secondary.opacity(0.7))
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue.opacity(0.3), Color.blue.opacity(0.1)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 100, height: 100)
+                    .blur(radius: 10)
+                
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 40))
+                    .symbolRenderingMode(.multicolor)
+                    .foregroundColor(Color.blue)
+                    .shadow(color: .black.opacity(0.3), radius: 5, x: 0, y: 3)
+            }
+            .scaleEffect(isAnimating ? 1.05 : 1.0)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isAnimating)
+            .onAppear {
+                isAnimating = true
+            }
+
+            VStack(spacing: 8) {
+                Text("활성화된 세션 없음")
+                    .font(.title)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                
+                Text("+ 버튼이나 Cmd+T를 눌러 세션 생성")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: NSColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1.0)))
+        .background(
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(nsColor: NSColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1.0)),
+                    Color(nsColor: NSColor(red: 0.08, green: 0.08, blue: 0.1, alpha: 1.0))
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 }
