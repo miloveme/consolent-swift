@@ -373,4 +373,62 @@ final class GeminiAdapterTests: XCTestCase {
         XCTAssertFalse(result.contains("Gemini CLI v1.0"))
         XCTAssertFalse(result.contains("loaded cached credentials"))
     }
+
+    // MARK: - 실제 화면 버퍼 재현 테스트
+
+    func testCleanResponse_fullScreenWithInputPlaceholder() {
+        // 실제 Gemini 화면 버퍼 재현: 응답 후 입력 필드 플레이스홀더가
+        // "* Type your message"로 시작하여 hasPrefix("* ")에 매칭되는 경우
+        let screen = """
+          ▝▜▄     Gemini CLI v0.33.1
+            ▝▜▄
+           ▗▟▀    Logged in with Google /auth
+          ▝▀      Gemini Code Assist in Google One AI Pro /upgrade
+
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > Say just the word OK and nothing else.
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ OK
+
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > Say just the word OK and nothing else.
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ OK
+
+                                                          ? for shortcuts
+        ──────────────────────────────────────────────────────────────────
+         YOLO ctrl+y                                  1 GEMINI.md file | 1 MCP server | 2 skills
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         *   Type your message or @path/to/file
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         ~/Documents/Dev/AI/gemini                     no sandbox (see /docs)                      /model Auto (Gemini 3)
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertEqual(result, "OK", "입력 필드 플레이스홀더 '* Type your message'가 응답을 클리어하면 안 됨")
+    }
+
+    func testCleanResponse_whoAreYouResponse() {
+        // "너는 누구야" 질문에 대한 Gemini 자기소개 응답
+        // 응답에 "Gemini CLI", "code assist" 등 TUI chrome 패턴이 포함될 수 있음
+        let screen = """
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > 너는 누구야
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ 저는 Google의 Gemini CLI입니다. 소프트웨어 엔지니어링 작업을 도와드립니다.
+        코드 작성, 디버깅, 코드 리뷰, 시스템 설계 등을 지원합니다.
+
+                                                          ? for shortcuts
+        ──────────────────────────────────────────────────────────────────
+         YOLO ctrl+y                                  1 GEMINI.md file
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         *   Type your message or @path/to/file
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         ~/Documents/Dev/AI/gemini                     /model Auto (Gemini 3)
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("Gemini CLI"), "응답 내 'Gemini CLI'가 보존되어야 함")
+        XCTAssertTrue(result.contains("코드 작성"), "응답 연속 줄이 보존되어야 함")
+        XCTAssertFalse(result.contains("Type your message"), "입력 필드 플레이스홀더는 제거되어야 함")
+        XCTAssertFalse(result.contains("YOLO ctrl"), "TUI chrome은 제거되어야 함")
+    }
 }

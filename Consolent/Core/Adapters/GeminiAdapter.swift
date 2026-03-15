@@ -79,15 +79,6 @@ struct GeminiAdapter: CLIAdapter {
                 continue
             }
 
-            // ── 사용자 입력 시작 (> / ! / * 프롬프트) ──
-            // TUI chrome 필터보다 먼저 체크 (프롬프트 문자가 필터에 매칭되지 않도록)
-            if trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
-                responseLines = []
-                phase = 1
-                continue
-            }
-
             // ── 어시스턴트 응답 시작 (✦ 마커) ──
             // TUI chrome 필터보다 먼저 체크해야 함!
             // 응답 내용에 "gemini cli" 등 TUI chrome 패턴이 포함될 수 있기 때문.
@@ -102,7 +93,18 @@ struct GeminiAdapter: CLIAdapter {
             }
 
             // TUI chrome / 상태바 — 모든 phase에서 필터
+            // "* Type your message" 등 입력 필드 플레이스홀더를 사용자 입력보다 먼저 걸러야 함
             if Self.matchesTUIChrome(trimmed) {
+                continue
+            }
+
+            // ── 사용자 입력 시작 (> / ! / * 프롬프트) ──
+            // TUI chrome 뒤에 배치: Gemini 입력 필드 "* Type your message"가
+            // hasPrefix("* ")에 매칭되어 responseLines를 클리어하는 것을 방지
+            if trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ") {
+                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+                responseLines = []
+                phase = 1
                 continue
             }
 
