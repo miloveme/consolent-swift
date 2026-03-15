@@ -6,6 +6,7 @@ import Vapor
 final class APIServer: ObservableObject {
 
     @Published private(set) var isRunning = false
+    @Published private(set) var serverError: String?
     @Published private(set) var connectionCount = 0
 
     private var app: Application?
@@ -13,6 +14,11 @@ final class APIServer: ObservableObject {
 
     init(sessionManager: SessionManager = .shared) {
         self.sessionManager = sessionManager
+    }
+
+    @MainActor
+    func setServerError(_ error: String?) {
+        self.serverError = error
     }
 
     // MARK: - Lifecycle
@@ -65,6 +71,7 @@ final class APIServer: ObservableObject {
 
         await MainActor.run {
             self.isRunning = true
+            self.serverError = nil
         }
 
         print("[Consolent API] Server started successfully on http://\(config.apiBind):\(config.apiPort)")
@@ -77,6 +84,7 @@ final class APIServer: ObservableObject {
         }
         await MainActor.run {
             self.isRunning = false
+            self.serverError = nil
         }
         print("[Consolent API] Server stopped")
     }

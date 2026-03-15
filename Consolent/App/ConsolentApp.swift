@@ -19,6 +19,13 @@ struct ConsolentApp: App {
             .onAppear {
                 startAPIServer()
             }
+            .onChange(of: config.apiEnabled) { oldValue, newValue in
+                if newValue {
+                    startAPIServer()
+                } else {
+                    stopAPIServer()
+                }
+            }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1100, height: 700)
@@ -100,11 +107,30 @@ struct ConsolentApp: App {
             } catch {
                 print("[Consolent] Failed to start API server: \(error)")
                 print("[Consolent] Error details: \(String(describing: error))")
+                
+                let errorDesc = String(describing: error)
+                let userFriendlyError: String
+                if errorDesc.contains("NIOCore.IOError") || errorDesc.contains("address already in use") {
+                    userFriendlyError = "포트가 이미 사용 중입니다. 다른 포트를 지정하거나 기존 프로세스를 종료하세요."
+                } else {
+                    userFriendlyError = error.localizedDescription
+                }
+                
+                await MainActor.run {
+                    apiServer.setServerError(userFriendlyError)
+                }
             }
         }
 
         // SessionManager 설정 동기화
         sessionManager.maxConcurrentSessions = config.maxConcurrentSessions
+    }
+
+    private func stopAPIServer() {
+        print("[Consolent] Stopping API server from settings toggle")
+        Task {
+            await apiServer.stop()
+        }
     }
 
     private func selectNextSession() {
