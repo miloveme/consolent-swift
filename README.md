@@ -137,6 +137,105 @@ curl http://localhost:9999/v1/models \
 
 ---
 
+## OpenAI 호환 API Reference
+
+모든 요청에 `Authorization: Bearer cst_YOUR_API_KEY` 헤더가 필요합니다.
+
+### POST /v1/chat/completions
+
+**Request Body:**
+
+| 파라미터             | 타입              | 필수 | 기본값   | 설명                                      |
+|---------------------|-------------------|------|---------|-------------------------------------------|
+| `messages`          | `array`           | O    |         | 메시지 배열 (마지막 `user` 메시지를 전송)     |
+| `model`             | `string`          |      |         | 모델 ID (`claude-code`, `codex`, `gemini`) |
+| `stream`            | `boolean`         |      | `false` | SSE 스트리밍 활성화                          |
+| `timeout`           | `integer`         |      | `300`   | 응답 대기 타임아웃 (초)                       |
+| `temperature`       | `number`          |      |         | 호환성 위해 수용 (무시됨)                     |
+| `max_tokens`        | `integer`         |      |         | 호환성 위해 수용 (무시됨)                     |
+| `top_p`             | `number`          |      |         | 호환성 위해 수용 (무시됨)                     |
+| `n`                 | `integer`         |      |         | 호환성 위해 수용 (무시됨)                     |
+| `stop`              | `string`/`array`  |      |         | 호환성 위해 수용 (무시됨)                     |
+| `presence_penalty`  | `number`          |      |         | 호환성 위해 수용 (무시됨)                     |
+| `frequency_penalty` | `number`          |      |         | 호환성 위해 수용 (무시됨)                     |
+| `user`              | `string`          |      |         | 호환성 위해 수용 (무시됨)                     |
+
+> CLI 도구가 직접 생성하므로 `temperature`, `max_tokens` 등 생성 파라미터는 Consolent이 제어하지 않습니다.
+
+**`messages` 형식:**
+
+```json
+// 문자열
+{"role": "user", "content": "안녕"}
+
+// 배열 (OpenAI vision 호환)
+{"role": "user", "content": [{"type": "text", "text": "안녕"}]}
+```
+
+**응답 (비스트리밍):**
+
+```json
+{
+  "id": "chatcmpl-m_x1y2z3",
+  "object": "chat.completion",
+  "created": 1710460800,
+  "model": "claude-code",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "응답 텍스트..."},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+}
+```
+
+> `usage` 필드는 호환성 위해 포함되며 항상 `0`입니다. CLI 도구가 토큰 수를 노출하지 않기 때문입니다.
+
+**응답 (스트리밍, `stream: true`):**
+
+`Content-Type: text/event-stream` 으로 SSE 형식 반환:
+
+```
+data: {"id":"chatcmpl-m_x1y2z3","object":"chat.completion.chunk","created":1710460800,"model":"claude-code","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-m_x1y2z3","object":"chat.completion.chunk","created":1710460800,"model":"claude-code","choices":[{"index":0,"delta":{"content":"응답 텍스트..."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-m_x1y2z3","object":"chat.completion.chunk","created":1710460800,"model":"claude-code","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+> 현재 응답 전체를 수신한 후 청크로 분할 전송합니다. 실시간 토큰 단위 스트리밍은 아닙니다.
+
+**에러:**
+
+| 상태 코드 | 원인                         |
+|----------|------------------------------|
+| `400`    | `messages`가 비어있거나 `user` 메시지 없음 |
+| `401`    | API Key 누락 또는 불일치         |
+| `503`    | 준비된 세션 없음 (앱에서 세션 먼저 생성 필요) |
+
+### GET /v1/models
+
+**응답:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "claude-code", "object": "model", "created": 1710460800, "owned_by": "consolent"},
+    {"id": "codex",       "object": "model", "created": 1710460800, "owned_by": "consolent"},
+    {"id": "gemini",      "object": "model", "created": 1710460800, "owned_by": "consolent"}
+  ]
+}
+```
+
+사용 가능한 모델은 `CLIType`에 등록된 CLI 도구에 따라 동적으로 생성됩니다.
+
+---
+
 ## 세션 관리 API
 
 ### 세션 생성
@@ -379,7 +478,7 @@ protocol CLIAdapter {
 - CLI 도구가 로컬에 설치/로그인 필요
 - CLI [TUI](#term-tui) 변경 시 [Adapter](#term-adapter) 업데이트 필요
 - App Store 불가 (샌드박스 제약) — 직접 배포
-- OpenAI API `stream: true` 미구현 (동기 응답만)
+- OpenAI API `stream: true`는 SSE 형식으로 지원하나, 응답 수신 후 일괄 전송 (실시간 토큰 스트리밍 아님)
 
 ---
 

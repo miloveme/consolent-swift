@@ -172,12 +172,70 @@ struct APIReferenceView: View {
 
     @ObservedObject var config: AppConfig
 
+    private let tocItems: [(id: String, icon: String, title: String)] = [
+        ("toc-connection",  "link",              "Connection"),
+        ("toc-openai",      "arrow.left.arrow.right", "OpenAI Compatible"),
+        ("toc-sessions",    "rectangle.stack",   "Sessions"),
+        ("toc-messages",    "message",           "Messages"),
+        ("toc-input",       "keyboard",          "Raw Input"),
+        ("toc-output",      "text.alignleft",    "Output"),
+        ("toc-approval",    "checkmark.shield",  "Approval"),
+        ("toc-websocket",   "bolt.horizontal",   "WebSocket Streaming"),
+        ("toc-curl",        "terminal",          "Quick Start (curl)"),
+    ]
+
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
 
+                // 목차
+                tableOfContents(proxy: proxy)
+
                 connectionInfo
+                    .id("toc-connection")
+
+                endpointSection("OpenAI Compatible") {
+                    endpoint("POST", "/v1/chat/completions", "Send a chat completion request (OpenAI SDK compatible)",
+                             request: """
+                             {
+                               "model": "claude-code",
+                               "messages": [{"role": "user", "content": "Hello"}],
+                               "stream": false,
+                               "timeout": 300
+                             }
+                             """,
+                             response: """
+                             {
+                               "id": "chatcmpl-m_x1y2z3",
+                               "object": "chat.completion",
+                               "created": 1710460800,
+                               "model": "claude-code",
+                               "choices": [{
+                                 "index": 0,
+                                 "message": {"role": "assistant", "content": "..."},
+                                 "finish_reason": "stop"
+                               }],
+                               "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                             }
+                             """,
+                             notes: "Accepts temperature, max_tokens, top_p, etc. for compatibility but ignores them. When stream=true, returns SSE chunks. Usage tokens are always 0.")
+
+                    endpoint("GET", "/v1/models", "List available models",
+                             response: """
+                             {
+                               "object": "list",
+                               "data": [
+                                 {"id": "claude-code", "object": "model", "owned_by": "consolent"},
+                                 {"id": "codex", "object": "model", "owned_by": "consolent"},
+                                 {"id": "gemini", "object": "model", "owned_by": "consolent"}
+                               ]
+                             }
+                             """,
+                             notes: "Models are dynamically generated from registered CLI adapters.")
+                }
+                .id("toc-openai")
 
                 endpointSection("Sessions") {
                     endpoint("POST", "/sessions", "Create a new Claude Code session",
@@ -233,6 +291,7 @@ struct APIReferenceView: View {
                     endpoint("DELETE", "/sessions/:id", "Terminate and remove a session",
                              notes: "Returns 204 No Content on success.")
                 }
+                .id("toc-sessions")
 
                 endpointSection("Messages") {
                     endpoint("POST", "/sessions/:id/message", "Send a message and wait for response",
@@ -255,6 +314,7 @@ struct APIReferenceView: View {
                              """,
                              notes: "This is a synchronous endpoint. It blocks until Claude responds or the timeout is reached. Default timeout: 300s.")
                 }
+                .id("toc-messages")
 
                 endpointSection("Raw Input") {
                     endpoint("POST", "/sessions/:id/input", "Inject raw text or key sequences",
@@ -265,6 +325,7 @@ struct APIReferenceView: View {
                              """,
                              notes: "Supported keys: ctrl+c, ctrl+d, ctrl+z, ctrl+l, enter, tab, escape, up, down, left, right. Raw text is injected as-is (include \\n for Enter).")
                 }
+                .id("toc-input")
 
                 endpointSection("Output") {
                     endpoint("GET", "/sessions/:id/output", "Read the output buffer",
@@ -277,6 +338,7 @@ struct APIReferenceView: View {
                              }
                              """)
                 }
+                .id("toc-output")
 
                 endpointSection("Approval") {
                     endpoint("GET", "/sessions/:id/pending", "Check for pending approval prompts",
@@ -296,17 +358,21 @@ struct APIReferenceView: View {
                              { "approved": true }
                              """)
                 }
+                .id("toc-approval")
 
                 endpointSection("WebSocket Streaming") {
                     wsInfo
                 }
+                .id("toc-websocket")
 
                 curlExamples
+                    .id("toc-curl")
 
                 Spacer(minLength: 20)
             }
             .padding(32)
         }
+        } // ScrollViewReader
         .frame(minWidth: 650, idealWidth: 750, minHeight: 500, idealHeight: 700)
     }
 
@@ -328,6 +394,53 @@ struct APIReferenceView: View {
                 }
             }
             Divider()
+        }
+    }
+
+    private func tableOfContents(proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Table of Contents")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            LazyVGrid(columns: [
+                GridItem(.flexible(), alignment: .leading),
+                GridItem(.flexible(), alignment: .leading),
+                GridItem(.flexible(), alignment: .leading),
+            ], spacing: 6) {
+                ForEach(tocItems, id: \.id) { item in
+                    Button {
+                        withAnimation {
+                            proxy.scrollTo(item.id, anchor: .top)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: item.icon)
+                                .frame(width: 16)
+                                .foregroundColor(.accentColor)
+                            Text(item.title)
+                                .font(.callout)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.secondary.opacity(0.06))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+            )
         }
     }
 
