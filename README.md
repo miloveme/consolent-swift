@@ -5,32 +5,32 @@
 Consolent은 Claude Code, Codex CLI, Gemini CLI 등 터미널 기반 AI 코딩 에이전트를 PTY(가상 터미널)에서 실행하고, HTTP/WebSocket API로 제어합니다. CLI 도구 입장에서는 100% 사람이 타이핑하는 것과 동일하게 동작합니다.
 
 ```
-┌─ Your App ─┐     HTTP/WebSocket      ┌─ Consolent ─────────────────────┐
+┌─ Your App ──┐     HTTP/WebSocket      ┌─ Consolent ─────────────────────┐
 │             │ ──────────────────────▶ │  API Server (Vapor)             │
-│  웹앱       │  /v1/chat/completions   │    ↓                            │
-│  봇         │                         │  Session Manager                │
-│  스크립트   │                         │    ↓                            │
-│  OpenAI SDK │ ◀────────────────────── │  PTY → claude/codex/gemini CLI │
+│  웹앱        │  /v1/chat/completions   │    ↓                            │
+│  봇          │                         │  Session Manager                │
+│  스크립트     │                         │    ↓                            │
+│  OpenAI SDK │ ◀────────────────────── │  PTY → claude/codex/gemini CLI  │
 └─────────────┘     JSON Response       └─────────────────────────────────┘
 ```
 
 ## 왜 Consolent인가
 
-| | PTY 방식 (Consolent) | SDK 방식 |
-|---|---|---|
-| CLI 관점 | 사람이 쓰는 것과 동일 | 프로그래밍 호출 |
-| 과금 | 기존 구독 그대로 | 별도 API 과금 |
-| 기능 범위 | CLI 전체 기능 | SDK가 노출하는 범위만 |
-| 인증 | 이미 로그인된 상태 사용 | 별도 API key 필요 |
-| 확장성 | Adapter 1개 추가 = 새 CLI 지원 | SDK별 개별 통합 |
+|          | PTY 방식 (Consolent)              | SDK 방식                |
+|----------|-----------------------------------|-------------------------|
+| CLI 관점  | 사람이 쓰는 것과 동일                | 프로그래밍 호출             |
+| 과금      | 기존 구독 그대로                    | 별도 API 과금             |
+| 기능 범위  | CLI 전체 기능                      | SDK가 노출하는 범위만       |
+| 인증      | 이미 로그인된 상태 사용              | 별도 API key 필요         |
+| 확장성    | Adapter 1개 추가 = 새 CLI 지원      | SDK별 개별 통합            |
 
 ## 지원 CLI
 
-| CLI 도구 | 상태 | 비고 |
-|----------|------|------|
-| Claude Code | 완전 구현 | TUI 패턴 파싱, 크롬 제거, 완료 감지 |
-| Codex CLI | 기본 틀 | TUI 패턴 확인 필요 |
-| Gemini CLI | 기본 틀 | TUI 패턴 확인 필요 |
+| CLI 도구    | 상태     | 비고                                |
+|-------------|----------|-------------------------------------|
+| Claude Code | 완전 구현 | TUI 패턴 파싱, 크롬 제거, 완료 감지    |
+| Gemini CLI  | 완전 구현 | TUI 패턴 파싱, 크롬 제거, 완료 감지    |
+| Codex CLI   | 기본 틀   | TUI 패턴 확인 필요                   |
 
 ---
 
@@ -309,13 +309,13 @@ Consolent/
 
 ### 핵심 기술
 
-| 컴포넌트 | 기술 |
-|---------|------|
-| App Framework | SwiftUI + AppKit |
-| 터미널 | SwiftTerm (렌더링 + 헤드리스 ANSI 해석) |
-| PTY | `forkpty()` (POSIX) |
-| HTTP/WS Server | Vapor (embedded) |
-| 출력 파싱 | 4단계 ANSI strip + Adapter별 TUI 크롬 제거 |
+| 컴포넌트        | 기술                                       |
+|----------------|---------------------------------------------|
+| App Framework  | SwiftUI + AppKit                            |
+| 터미널          | SwiftTerm (렌더링 + 헤드리스 ANSI 해석)        |
+| PTY            | `forkpty()` (POSIX)                         |
+| HTTP/WS Server | Vapor (embedded)                            |
+| 출력 파싱        | 4단계 ANSI strip + Adapter별 TUI 크롬 제거    |
 
 ### CLIAdapter 패턴
 
@@ -338,13 +338,12 @@ protocol CLIAdapter {
 
 ### 응답 완료 감지
 
-2단계 전략으로 정확도와 속도를 모두 확보:
+idle timer + adapter delegate 방식으로 정확하게 감지:
 
-| 단계 | 트리거 | 체크 | 용도 |
-|------|--------|------|------|
-| Fast Path | 매 PTY 출력 | `readySignal` 포함 여부 | 빠른 감지 |
-| Safe Path | idle 1~10초 후 | `isResponseComplete()` | 전환 구간 안전 |
-| Safety Net | 600초 | 강제 완료 | 행 방지 |
+| 단계        | 트리거          | 체크                     | 용도          |
+|-------------|-----------------|--------------------------|---------------|
+| Idle Check  | idle 2초 후      | `isResponseComplete()`   | 주요 감지      |
+| Safety Net  | 600초           | 강제 완료                 | 행 방지        |
 
 ---
 
@@ -354,14 +353,14 @@ protocol CLIAdapter {
 
 `~/Library/Application Support/Consolent/config.json`
 
-| 항목 | 기본값 | 설명 |
-|------|--------|------|
-| `apiPort` | `9999` | API 서버 포트 |
-| `apiBind` | `127.0.0.1` | 바인드 주소 |
-| `defaultCliType` | `claude-code` | 기본 CLI 도구 |
-| `maxConcurrentSessions` | `10` | 최대 동시 세션 |
-| `sessionIdleTimeout` | `3600` | 유휴 타임아웃 (초) |
-| `includeRawOutput` | `false` | ANSI 원본 포함 여부 |
+| 항목                     | 기본값        | 설명                |
+|--------------------------|---------------|---------------------|
+| `apiPort`                | `9999`        | API 서버 포트        |
+| `apiBind`                | `127.0.0.1`  | 바인드 주소           |
+| `defaultCliType`         | `claude-code` | 기본 CLI 도구        |
+| `maxConcurrentSessions`  | `10`          | 최대 동시 세션        |
+| `sessionIdleTimeout`     | `3600`        | 유휴 타임아웃 (초)    |
+| `includeRawOutput`       | `false`       | ANSI 원본 포함 여부   |
 
 ---
 
