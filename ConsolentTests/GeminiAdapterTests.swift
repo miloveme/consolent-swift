@@ -334,4 +334,43 @@ final class GeminiAdapterTests: XCTestCase {
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "응답")
     }
+
+    // MARK: - cleanResponse: TUI Chrome 패턴이 응답에 포함되는 경우
+
+    func testCleanResponse_responseContainingGeminiCLI() {
+        // Gemini가 자기 소개할 때 "Gemini CLI"가 응답에 포함되는 경우
+        // "gemini cli"는 TUI chrome 패턴이지만, ✦ 마커 뒤의 응답 내용은 필터하면 안 됨
+        let screen = """
+        > 너는 누구야
+        ✦ 저는 소프트웨어 엔지니어링 작업을 지원하는 Gemini CLI입니다.
+        코드 구현, 시스템 분석, 테스트를 돕습니다.
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("Gemini CLI"), "응답 내 'Gemini CLI' 텍스트가 보존되어야 함")
+        XCTAssertTrue(result.contains("코드 구현"), "응답 연속 줄이 보존되어야 함")
+    }
+
+    func testCleanResponse_responseContainingCodeAssist() {
+        // "code assist in" 패턴이 응답에 포함되는 경우
+        let screen = """
+        > 기능 설명해줘
+        ✦ code assist in your IDE에서 자동 완성을 제공합니다.
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("code assist in"), "응답 내 'code assist in' 텍스트가 보존되어야 함")
+    }
+
+    func testCleanResponse_tuiChromeStillFilteredOutsidePhase2() {
+        // phase 2 밖에서는 TUI chrome이 여전히 필터되어야 함
+        let screen = """
+        Gemini CLI v1.0
+        loaded cached credentials
+        > hello
+        ✦ 안녕하세요!
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertEqual(result, "안녕하세요!")
+        XCTAssertFalse(result.contains("Gemini CLI v1.0"))
+        XCTAssertFalse(result.contains("loaded cached credentials"))
+    }
 }

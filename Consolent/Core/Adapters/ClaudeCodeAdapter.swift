@@ -55,6 +55,32 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 continue
             }
 
+            // ── 사용자 입력 시작 (❯ / › 프롬프트) ──
+            // TUI chrome 필터보다 먼저 체크 (프롬프트 문자가 필터에 매칭되지 않도록)
+            if trimmed.hasPrefix("❯ ") || trimmed.hasPrefix("› ") {
+                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+                responseLines = []
+                phase = 1
+                continue
+            }
+
+            // ── 어시스턴트 응답 시작 (⏺ 마커) ──
+            // TUI chrome 필터보다 먼저 체크해야 함!
+            // 응답 내용에 "is not in", ▶ 등 TUI chrome 패턴이 포함될 수 있기 때문.
+            if trimmed.hasPrefix("⏺") {
+                phase = 2
+
+                // TUI 도구 사용 표시 제거
+                if trimmed.range(of: "⏺\\s+(Read|Wrote|Ran|Created|Updated|Deleted|Searched|Listed)\\s+.*\\(ctrl\\+", options: .regularExpression) != nil {
+                    continue
+                }
+                let stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
+                if !stripped.isEmpty {
+                    responseLines.append(stripped)
+                }
+                continue
+            }
+
             // TUI chrome / 상태바 — 모든 phase에서 필터
             if Self.matchesTUIChrome(trimmed) {
                 continue
@@ -77,29 +103,6 @@ struct ClaudeCodeAdapter: CLIAdapter {
 
             // 프롬프트만 있는 줄
             if trimmed == "›" || trimmed == "❯" || trimmed == ">" || trimmed == "$" {
-                continue
-            }
-
-            // ── 사용자 입력 시작 (❯ / › 프롬프트) ──
-            if trimmed.hasPrefix("❯ ") || trimmed.hasPrefix("› ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
-                responseLines = []
-                phase = 1
-                continue
-            }
-
-            // ── 어시스턴트 응답 시작 (⏺ 마커) ──
-            if trimmed.hasPrefix("⏺") {
-                phase = 2
-
-                // TUI 도구 사용 표시 제거
-                if trimmed.range(of: "⏺\\s+(Read|Wrote|Ran|Created|Updated|Deleted|Searched|Listed)\\s+.*\\(ctrl\\+", options: .regularExpression) != nil {
-                    continue
-                }
-                let stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
-                if !stripped.isEmpty {
-                    responseLines.append(stripped)
-                }
                 continue
             }
 
@@ -158,10 +161,12 @@ struct ClaudeCodeAdapter: CLIAdapter {
 
     private static func matchesTUIChrome(_ text: String) -> Bool {
         let lowered = text.lowercased()
+        // 주의: 응답 내용에도 나올 수 있는 패턴은 포함하지 않는다.
+        // 예: "is not in"(일반 영어 표현) 등은 제외.
         let quickPatterns = [
             "esc to interrupt", "? for shortcuts", "api error",
             "bypass permissions", "native installation",
-            "is not in", "shift+tab", "to cycle",
+            "shift+tab", "to cycle",
         ]
         for pattern in quickPatterns {
             if lowered.contains(pattern) { return true }
@@ -169,9 +174,10 @@ struct ClaudeCodeAdapter: CLIAdapter {
 
         // 상태바 삼각형 마커 (다양한 유니코드 변형)
         // ⏵ (U+23F5), ▶ (U+25B6), ► (U+25BA), ⏸ (U+23F8), ▸ (U+25B8)
-        let statusBarChars: [Character] = ["⏵", "▶", "►", "⏸", "▸", "⏩"]
-        for ch in statusBarChars {
-            if text.contains(ch) { return true }
+        // 줄이 이 문자로 시작하면 TUI 상태바로 판단 (응답 중간의 ▶ 등은 보호)
+        let statusBarChars: Set<Character> = ["⏵", "▶", "►", "⏸", "▸", "⏩"]
+        if let first = text.first, statusBarChars.contains(first) {
+            return true
         }
 
         let statusPatterns = [

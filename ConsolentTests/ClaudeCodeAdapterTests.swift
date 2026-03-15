@@ -304,4 +304,42 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "감사합니다! 도움이 필요하면 말씀해 주세요.")
     }
+
+    // MARK: - cleanResponse: TUI Chrome 패턴이 응답에 포함되는 경우
+
+    func testCleanResponse_responseContainingIsNotIn() {
+        // "is not in"은 TUI chrome 패턴이지만, 응답 내용에 포함될 수 있음
+        let screen = """
+        ❯ explain
+        ⏺ The value is not in the expected range.
+        Please check the configuration.
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("is not in"), "응답 내 'is not in' 텍스트가 보존되어야 함")
+        XCTAssertTrue(result.contains("configuration"), "응답 연속 줄이 보존되어야 함")
+    }
+
+    func testCleanResponse_responseContainingArrowSymbol() {
+        // ▶ 문자가 응답에 포함되는 경우 (UI 설명 등)
+        let screen = """
+        ❯ how to use
+        ⏺ Click the ▶ button to start playback.
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("▶"), "응답 내 ▶ 문자가 보존되어야 함")
+    }
+
+    func testCleanResponse_tuiChromeStillFilteredOutsidePhase2() {
+        // phase 2 밖에서는 TUI chrome이 여전히 필터되어야 함
+        let screen = """
+        ? for shortcuts
+        bypass permissions
+        ❯ hello
+        ⏺ 안녕하세요!
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertEqual(result, "안녕하세요!")
+        XCTAssertFalse(result.contains("shortcuts"))
+        XCTAssertFalse(result.contains("bypass"))
+    }
 }

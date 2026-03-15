@@ -79,6 +79,28 @@ struct GeminiAdapter: CLIAdapter {
                 continue
             }
 
+            // ── 사용자 입력 시작 (> / ! / * 프롬프트) ──
+            // TUI chrome 필터보다 먼저 체크 (프롬프트 문자가 필터에 매칭되지 않도록)
+            if trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ") {
+                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+                responseLines = []
+                phase = 1
+                continue
+            }
+
+            // ── 어시스턴트 응답 시작 (✦ 마커) ──
+            // TUI chrome 필터보다 먼저 체크해야 함!
+            // 응답 내용에 "gemini cli" 등 TUI chrome 패턴이 포함될 수 있기 때문.
+            if trimmed.hasPrefix("✦") {
+                phase = 2
+
+                let stripped = trimmed.replacingOccurrences(of: "^✦\\s*", with: "", options: .regularExpression)
+                if !stripped.isEmpty {
+                    responseLines.append(stripped)
+                }
+                continue
+            }
+
             // TUI chrome / 상태바 — 모든 phase에서 필터
             if Self.matchesTUIChrome(trimmed) {
                 continue
@@ -96,7 +118,7 @@ struct GeminiAdapter: CLIAdapter {
                 continue
             }
 
-            // 구분선 (───) — phase 2에서 만나면 응답 영역 끝
+            // 구분선 (───) — phase 2에서 만나면 응답 영역 끝 (TUI chrome 영역 시작)
             if trimmed.hasPrefix("───") || trimmed.hasPrefix("━━━") || trimmed.allSatisfy({ $0 == "─" || $0 == "━" }) {
                 if phase == 2 { phase = 0 }
                 continue
@@ -114,25 +136,6 @@ struct GeminiAdapter: CLIAdapter {
 
             // 도구 상태 줄 (✓ ToolName, ⊷ ToolName 등)
             if Self.isToolStatusLine(trimmed) {
-                continue
-            }
-
-            // ── 사용자 입력 시작 (> / ! / * 프롬프트) ──
-            if trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
-                responseLines = []
-                phase = 1
-                continue
-            }
-
-            // ── 어시스턴트 응답 시작 (✦ 마커) ──
-            if trimmed.hasPrefix("✦") {
-                phase = 2
-
-                let stripped = trimmed.replacingOccurrences(of: "^✦\\s*", with: "", options: .regularExpression)
-                if !stripped.isEmpty {
-                    responseLines.append(stripped)
-                }
                 continue
             }
 
@@ -217,12 +220,14 @@ struct GeminiAdapter: CLIAdapter {
 
     private static func matchesTUIChrome(_ text: String) -> Bool {
         let lowered = text.lowercased()
+        // 주의: 응답 내용에도 나올 수 있는 패턴은 포함하지 않는다.
+        // 예: "gemini cli"(자기소개), "code assist in"(기능 설명) 등은 제외.
         let quickPatterns = [
             "esc to cancel", "? for shortcuts", "press tab twice",
-            "type your message", "shift+tab", "gemini cli",
+            "type your message", "shift+tab",
             "loaded cached credentials", "no sandbox",
             "yolo ctrl+", "auto-accept ctrl+", "plan ctrl+",
-            "logged in with", "code assist in",
+            "logged in with",
         ]
         for pattern in quickPatterns {
             if lowered.contains(pattern) { return true }
