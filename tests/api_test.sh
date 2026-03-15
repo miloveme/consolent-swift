@@ -147,9 +147,37 @@ if [ "$HTTP_CODE" = "200" ]; then
     pass "GET /sessions returns $session_count session(s)"
 
     if [ "$session_count" -gt 0 ]; then
-        SESSION_ID=$(echo "$HTTP_BODY" | jq -r '.sessions[0].id')
-        session_status=$(echo "$HTTP_BODY" | jq -r '.sessions[0].status')
-        echo "       First session: $SESSION_ID (status: $session_status)"
+        # Prefer claude-code session if available
+        SESSION_ID=$(echo "$HTTP_BODY" | jq -r '[.sessions[] | select(.cli_type == "claude-code" or .cli_type == null)] | .[0].id // empty')
+        session_status=$(echo "$HTTP_BODY" | jq -r '[.sessions[] | select(.cli_type == "claude-code" or .cli_type == null)] | .[0].status // empty')
+        CLI_TYPE="claude-code"
+
+        # Fallback to first session if no claude-code session found
+        if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
+            SESSION_ID=$(echo "$HTTP_BODY" | jq -r '.sessions[0].id')
+            session_status=$(echo "$HTTP_BODY" | jq -r '.sessions[0].status')
+            CLI_TYPE=$(echo "$HTTP_BODY" | jq -r '.sessions[0].cli_type // "unknown"')
+        fi
+        echo "       First session: $SESSION_ID (status: $session_status, cli: $CLI_TYPE)"
+
+        # Wait for session to become ready (max 60 seconds)
+        if [ "$session_status" != "ready" ]; then
+            echo -e "       ${YELLOW}Waiting for session to become ready...${NC}"
+            for i in $(seq 1 30); do
+                sleep 2
+                response=$(api_get "/sessions/$SESSION_ID")
+                parse_response "$response"
+                session_status=$(echo "$HTTP_BODY" | jq -r '.status // empty')
+                if [ "$session_status" = "ready" ]; then
+                    echo -e "       ${GREEN}Session ready after $((i * 2))s${NC}"
+                    break
+                fi
+                printf "       Waiting... (%ds, status: %s)\n" "$((i * 2))" "$session_status"
+            done
+            if [ "$session_status" != "ready" ]; then
+                fail "Session did not become ready within 60s (status: $session_status)"
+            fi
+        fi
     fi
 else
     fail "GET /sessions expected 200, got $HTTP_CODE"
@@ -209,6 +237,7 @@ if [ -n "$SESSION_ID" ]; then
             echo "       Result: $(echo "$result" | head -c 100)..."
         else
             fail "Response result is empty"
+            echo "       Full response: $HTTP_BODY" | head -c 500
         fi
 
         if [ -n "$duration" ]; then
@@ -374,7 +403,16 @@ fi
 # ── 11. Complex Task: Generate HTML ──
 section "Complex Task — HTML Generation"
 
-TEMP_DIR=$(mktemp -d)
+# Gemini CLI는 보안 정책상 허용된 디렉토리에만 파일 생성 가능
+if [ "${CLI_TYPE:-}" = "gemini" ]; then
+    TEMP_DIR="$HOME/.gemini/tmp/gemini"
+    mkdir -p "$TEMP_DIR"
+    CLEANUP_TEMP=false
+else
+    TEMP_DIR=$(mktemp -d)
+    CLEANUP_TEMP=true
+fi
+
 response=$(api_post "/v1/chat/completions" "{
     \"model\": \"claude-code\",
     \"messages\": [{\"role\": \"user\", \"content\": \"Create a simple self-introduction HTML file at ${TEMP_DIR}/intro.html. Include: name='Consolent Test', role='API Testing Bot', a short paragraph about testing APIs, and basic CSS styling with a centered card layout. Do not ask for confirmation, just create the file.\"}],
@@ -420,10 +458,16 @@ if [ "$HTTP_CODE" = "200" ]; then
     fi
 
     # Cleanup
-    rm -rf "${TEMP_DIR}"
+    if [ "$CLEANUP_TEMP" = true ]; then
+        rm -rf "${TEMP_DIR}"
+    else
+        rm -f "${TEMP_DIR}/intro.html"
+    fi
 else
     fail "HTML generation request failed (HTTP $HTTP_CODE)" "$HTTP_BODY"
-    rm -rf "${TEMP_DIR}"
+    if [ "$CLEANUP_TEMP" = true ]; then
+        rm -rf "${TEMP_DIR}"
+    fi
 fi
 
 # ── 12. Complex Task: Code Explanation ──

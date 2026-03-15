@@ -10,70 +10,70 @@ final class ClaudeCodeAdapterTests: XCTestCase {
     func testFixCJKSpacing_removePaddingBetweenHangul() {
         // 모든 CJK 문자 뒤에 패딩 1칸
         let input = "안 녕 하 세 요"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "안녕하세요")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "안녕하세요")
     }
 
     func testFixCJKSpacing_preserveWordBoundary() {
         // 단어 경계: 패딩(1칸) + 실제 공백(1칸) = 2칸
         let input = "최 선 을  다 해"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "최선을 다해")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "최선을 다해")
     }
 
     func testFixCJKSpacing_sentenceWithPunctuationAndWordBoundaries() {
         // 실제 터미널 패딩 시뮬레이션: "네, 최선을 다해 도와드리겠습니다!"
         // CJK 뒤에 패딩 1칸, 단어 경계는 2칸, 문장부호(half-width)는 패딩 없음
         let input = "네 , 최 선 을  다 해  도 와 드 리 겠 습 니 다 !"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "네, 최선을 다해 도와드리겠습니다!")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "네, 최선을 다해 도와드리겠습니다!")
     }
 
     func testFixCJKSpacing_mixedKoreanAndEnglish() {
         // "Swift 코드를 작성합니다" — English 뒤는 패딩 없음
         let input = "Swift 코 드 를  작 성 합 니 다"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "Swift 코드를 작성합니다")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "Swift 코드를 작성합니다")
     }
 
     func testFixCJKSpacing_noChangeForEnglishOnly() {
         let input = "Hello, how are you?"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), input)
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), input)
     }
 
     func testFixCJKSpacing_noChangeForNormalKorean() {
         // 패딩이 없는 정상 한국어 — 단어 사이 공백만 존재
         let input = "안녕하세요, 반갑습니다"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), input)
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), input)
     }
 
     func testFixCJKSpacing_noChangeForNormalKoreanWithSpaces() {
         // 정상 띄어쓰기가 있는 한국어 (패딩 비율 < 50%)
         let input = "감사합니다! 도움이 필요하면 말씀해 주세요."
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), input)
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), input)
     }
 
     func testFixCJKSpacing_japaneseText() {
         let input = "こ ん に ち は"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "こんにちは")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "こんにちは")
     }
 
     func testFixCJKSpacing_chineseText() {
         let input = "你 好 世 界"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "你好世界")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "你好世界")
     }
 
     func testFixCJKSpacing_multipleWordBoundaries() {
         // "어떤 프로젝트든 말씀해 주세요"
         let input = "어 떤  프 로 젝 트 든  말 씀 해  주 세 요"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "어떤 프로젝트든 말씀해 주세요")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "어떤 프로젝트든 말씀해 주세요")
     }
 
     func testFixCJKSpacing_multiLine() {
         let input = "안 녕 하 세 요\n반 갑 습 니 다"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "안녕하세요\n반갑습니다")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "안녕하세요\n반갑습니다")
     }
 
     func testFixCJKSpacing_punctuationAfterCJK() {
         // CJK + 패딩 + 문장부호: "네!" → 터미널 "네 !" → "네!"
         let input = "네 ! 감 사 합 니 다 ."
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "네! 감사합니다.")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "네! 감사합니다.")
     }
 
     func testFixCJKSpacing_mixedLinePreservation() {
@@ -81,38 +81,38 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         let padded = "안 녕 하 세 요"      // 패딩 있음 → fix
         let normal = "Hello world"          // 패딩 없음 → 유지
         let input = padded + "\n" + normal
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), "안녕하세요\nHello world")
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), "안녕하세요\nHello world")
     }
 
     func testFixCJKSpacing_singleCJKChar() {
         // CJK 1개 → cjkCount < 2 → 무시
         let input = "I am 개"
-        XCTAssertEqual(ClaudeCodeAdapter.fixCJKSpacing(input), input)
+        XCTAssertEqual(CJKSpacingFix.fixCJKSpacing(input), input)
     }
 
     // MARK: - isCJK Tests
 
     func testIsCJK_hangulSyllable() {
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("가"))
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("힣"))
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("안"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("가"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("힣"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("안"))
     }
 
     func testIsCJK_cjkIdeograph() {
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("你"))
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("好"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("你"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("好"))
     }
 
     func testIsCJK_hiraganaKatakana() {
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("あ"))
-        XCTAssertTrue(ClaudeCodeAdapter.isCJK("ア"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("あ"))
+        XCTAssertTrue(CJKSpacingFix.isCJK("ア"))
     }
 
     func testIsCJK_nonCJK() {
-        XCTAssertFalse(ClaudeCodeAdapter.isCJK("A"))
-        XCTAssertFalse(ClaudeCodeAdapter.isCJK("1"))
-        XCTAssertFalse(ClaudeCodeAdapter.isCJK(" "))
-        XCTAssertFalse(ClaudeCodeAdapter.isCJK("!"))
+        XCTAssertFalse(CJKSpacingFix.isCJK("A"))
+        XCTAssertFalse(CJKSpacingFix.isCJK("1"))
+        XCTAssertFalse(CJKSpacingFix.isCJK(" "))
+        XCTAssertFalse(CJKSpacingFix.isCJK("!"))
     }
 
     // MARK: - cleanResponse: State Machine Tests

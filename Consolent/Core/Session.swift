@@ -126,8 +126,10 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         parser.idleTimeout = 1.0
         parser.startMonitoring()
 
-        // PTY에 입력
-        try ptyProcess.write(text + "\r")
+        // PTY에 입력 (텍스트와 Enter를 분리하여 TUI가 제출을 인식하도록 함)
+        try ptyProcess.write(text)
+        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        try ptyProcess.write("\r")
         await MainActor.run { messageCount += 1 }
 
         // 응답 완료 대기
@@ -190,13 +192,27 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         // 파서에 어댑터 연결
         parser.adapter = adapter
 
-        // Screen buffer 기반 완료 감지용 클로저
+        // Screen buffer 기반 완료 감지용 클로저.
+        // 마지막 비어있지 않은 줄을 찾아 그 주변 15줄을 읽는다.
+        // Gemini CLI는 처리 표시(esc to cancel)가 하단에서 ~10줄 위에 있으므로
+        // 충분한 범위를 읽어야 한다. Claude Code는 full-screen이라 영향 없음.
         parser.screenBufferChecker = { [weak self] in
             guard let self else { return "" }
             let terminal = self.headlessTerminal
-            let startRow = max(0, terminal.rows - 5)
+
+            // 마지막 비어있지 않은 줄 찾기
+            var lastNonEmptyRow = terminal.rows - 1
+            for row in stride(from: terminal.rows - 1, through: 0, by: -1) {
+                if let line = terminal.getLine(row: row),
+                   !line.translateToString(trimRight: true).isEmpty {
+                    lastNonEmptyRow = row
+                    break
+                }
+            }
+
+            let startRow = max(0, lastNonEmptyRow - 14)
             var lines: [String] = []
-            for row in startRow..<terminal.rows {
+            for row in startRow...lastNonEmptyRow {
                 if let line = terminal.getLine(row: row) {
                     lines.append(line.translateToString(trimRight: true))
                 }
@@ -283,6 +299,18 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let screenText = readHeadlessBuffer()
         let cleanText = adapter.cleanResponse(screenText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 디버그: 빈 응답일 때 screen buffer 로그
+        if cleanText.isEmpty {
+            print("[Session] ⚠️ Empty cleanText. Signal: \(signal)")
+            let debugLines = screenText.components(separatedBy: "\n")
+                .enumerated()
+                .filter { !$0.element.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { "  [\($0.offset)] \($0.element)" }
+                .joined(separator: "\n")
+            print("[Session] screenText (non-empty lines):\n\(debugLines)")
+        }
+
         let filesChanged = OutputParser.extractChangedFiles(from: rawText)
 
         let duration = Int((Date().timeIntervalSince(messageStartTime ?? Date())) * 1000)

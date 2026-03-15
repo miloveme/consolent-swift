@@ -35,6 +35,10 @@ protocol CLIAdapter {
     /// 처리 중 신호 (예: "esc to interrupt"). nil이면 처리 중 감지 불가.
     var processingSignal: String? { get }
 
+    /// Screen buffer를 분석하여 CLI가 메시지 처리를 시작했는지 판단한다.
+    /// 처리 중 고유 표시(스피너, "esc to interrupt" 등)가 나타나면 true.
+    func hasProcessingStarted(screenBuffer: String) -> Bool
+
     /// Screen buffer를 분석하여 응답이 완료되었는지 판단한다.
     func isResponseComplete(screenBuffer: String) -> Bool
 
@@ -43,6 +47,11 @@ protocol CLIAdapter {
     /// Screen buffer 텍스트에서 응답 본문만 추출한다.
     /// TUI chrome, 프롬프트, 상태 표시 등을 제거하고 깨끗한 텍스트를 반환.
     func cleanResponse(_ screenText: String) -> String
+
+    // MARK: - Output Parsing Patterns
+
+    /// 승인 프롬프트 패턴 (regex). 이 패턴이 출력에서 감지되면 승인 요청으로 처리.
+    var approvalPatterns: [String] { get }
 }
 
 // MARK: - Default Implementations
@@ -99,6 +108,31 @@ extension CLIAdapter {
         }
 
         return nil
+    }
+
+    /// 기본 승인 패턴 (대부분의 CLI에서 공통)
+    var approvalPatterns: [String] {
+        [
+            "\\(y/n\\)\\s*$",
+            "\\(Y/n\\)\\s*$",
+            "\\[y/N\\]\\s*$",
+            "\\[Y/n\\]\\s*$",
+            "Do you want to proceed\\?",
+            "Allow .+\\?\\s*\\(y\\)",
+            "Press Enter to continue",
+        ]
+    }
+
+    /// 기본 처리 시작 감지: processingSignal 출현 또는 readySignal 소멸
+    func hasProcessingStarted(screenBuffer: String) -> Bool {
+        if let processing = processingSignal {
+            return screenBuffer.range(
+                of: processing,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }
+        // processingSignal 없는 CLI: readySignal 소멸로 판단
+        return !screenBuffer.contains(readySignal)
     }
 
     /// 기본 완료 감지: readySignal/processingSignal 기반
