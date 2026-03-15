@@ -77,7 +77,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.config = config
         self.adapter = config.cliType.createAdapter()
         self.createdAt = Date()
-        self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: 40))
+        self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows))
         setupCallbacks()
     }
 
@@ -101,7 +101,8 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
             executable: config.shell,
             args: shellArgs,
             cwd: config.workingDirectory,
-            env: config.env
+            env: config.env,
+            rows: UInt16(AppConfig.shared.headlessTerminalRows)
         )
 
         // CLI 초기화 완료 대기 (프롬프트 출현)

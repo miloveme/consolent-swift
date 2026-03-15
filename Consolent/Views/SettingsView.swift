@@ -224,8 +224,8 @@ struct SettingsView: View {
         GroupBox("Terminal") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Font:")
-                        .frame(width: 80, alignment: .trailing)
+                    Text("글꼴:")
+                        .frame(width: 120, alignment: .trailing)
                     TextField("", text: $config.fontFamily)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 150)
@@ -237,8 +237,8 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Text("Theme:")
-                        .frame(width: 80, alignment: .trailing)
+                    Text("테마:")
+                        .frame(width: 120, alignment: .trailing)
                     Picker("", selection: $config.theme) {
                         Text("Dark").tag("dark")
                         Text("Light").tag("light")
@@ -248,14 +248,32 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Text("Scrollback:")
-                        .frame(width: 80, alignment: .trailing)
+                    Text("화면 스크롤 기록:")
+                        .frame(width: 120, alignment: .trailing)
                     TextField("", value: $config.scrollbackLines, formatter: NumberFormatter.plain)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
-                    Text("lines")
+                    Text("줄")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+
+                HStack {
+                    Text("API 응답 버퍼:")
+                        .frame(width: 120, alignment: .trailing)
+                    TextField("", value: $config.headlessTerminalRows, formatter: NumberFormatter.plain)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                    Text("줄")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if config.headlessTerminalRows > config.scrollbackLines {
+                    Label("스크롤 기록이 API 응답 버퍼보다 작으면 화면에서 전체 응답을 볼 수 없습니다",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
                 }
             }
             .padding(8)

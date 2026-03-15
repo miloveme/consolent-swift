@@ -27,6 +27,9 @@ struct TerminalViewWrapper: NSViewRepresentable {
         terminalView.nativeBackgroundColor = NSColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1.0)
         terminalView.nativeForegroundColor = NSColor(red: 0.9, green: 0.9, blue: 0.9, alpha: 1.0)
 
+        // 스크롤 기록 설정
+        terminalView.getTerminal().changeHistorySize(config.scrollbackLines)
+
         // 커서
         terminalView.cursorStyleChanged(source: terminalView.getTerminal(), newStyle: .blinkBlock)
 

@@ -32,7 +32,10 @@ final class AppConfig: ObservableObject, Codable {
     @Published var fontFamily: String = "SF Mono"
     @Published var fontSize: Int = 13
     @Published var theme: String = "dark"
-    @Published var scrollbackLines: Int = 10000
+    @Published var scrollbackLines: Int = 1000
+    /// Headless 터미널 행 수. TUI 앱은 alternate screen buffer(스크롤백 없음)를 사용하므로,
+    /// 긴 응답의 마커(⏺/✦)가 화면에 남도록 충분히 큰 값을 설정한다.
+    @Published var headlessTerminalRows: Int = 500
 
     // MARK: - Codable
 
@@ -40,7 +43,7 @@ final class AppConfig: ObservableObject, Codable {
         case apiEnabled, apiPort, apiBind, apiKey, includeRawOutput
         case maxConcurrentSessions, sessionIdleTimeout, outputBufferMB
         case defaultCliType, claudePath, defaultCwd, defaultShell, promptPattern
-        case fontFamily, fontSize, theme, scrollbackLines
+        case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
     }
 
     init() {
@@ -67,7 +70,8 @@ final class AppConfig: ObservableObject, Codable {
         fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? "SF Mono"
         fontSize = try c.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         theme = try c.decodeIfPresent(String.self, forKey: .theme) ?? "dark"
-        scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 10000
+        scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 1000
+        headlessTerminalRows = try c.decodeIfPresent(Int.self, forKey: .headlessTerminalRows) ?? 500
     }
 
     func encode(to encoder: Encoder) throws {
@@ -89,6 +93,7 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(fontSize, forKey: .fontSize)
         try c.encode(theme, forKey: .theme)
         try c.encode(scrollbackLines, forKey: .scrollbackLines)
+        try c.encode(headlessTerminalRows, forKey: .headlessTerminalRows)
     }
 
     // MARK: - Persistence
