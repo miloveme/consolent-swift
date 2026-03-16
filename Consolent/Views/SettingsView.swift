@@ -15,6 +15,7 @@ struct SettingsView: View {
 
     @ObservedObject var config: AppConfig
     @ObservedObject var apiServer: APIServer
+    @ObservedObject var sessionManager = SessionManager.shared
 
     @Environment(\.dismiss) private var dismiss
 
@@ -110,6 +111,10 @@ struct SettingsView: View {
                 }
 
                 Toggle("Include raw output in responses", isOn: $config.includeRawOutput)
+
+                Divider()
+
+                cloudflareSection
 
                 HStack {
                     Text("Status:")
@@ -277,6 +282,116 @@ struct SettingsView: View {
                 }
             }
             .padding(8)
+        }
+    }
+
+    // MARK: - Cloudflare Tunnel (세션별)
+
+    @ViewBuilder
+    private var cloudflareSection: some View {
+        let activeSessions = Array(sessionManager.sessions.values)
+            .filter { $0.status != .terminated }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        if activeSessions.isEmpty {
+            Text("Cloudflare Quick Tunnel")
+                .font(.caption)
+                .fontWeight(.medium)
+            Label("활성 세션이 없습니다. 세션을 먼저 생성하세요.",
+                  systemImage: "info.circle")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            Text("Cloudflare Quick Tunnel")
+                .font(.caption)
+                .fontWeight(.medium)
+            Label("세션별로 터널을 켜고 끌 수 있습니다. cloudflared 미설치 시 자동 설치됩니다.",
+                  systemImage: "info.circle")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(activeSessions) { session in
+                    tunnelRow(session: session)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func tunnelRow(session: Session) -> some View {
+        let isBusy: Bool = {
+            switch session.cloudflare.tunnelState {
+            case .installing, .starting: return true
+            default: return false
+            }
+        }()
+
+        let isOn = Binding<Bool>(
+            get: { session.cloudflare.tunnelState != .idle },
+            set: { enabled in
+                if enabled {
+                    sessionManager.startTunnel(sessionId: session.id)
+                } else {
+                    sessionManager.stopTunnel(sessionId: session.id)
+                }
+            }
+        )
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Toggle(isOn: isOn) {
+                    HStack(spacing: 4) {
+                        Text(session.id)
+                            .font(.system(.caption, design: .monospaced))
+                        Text("(\(session.config.cliType.displayName))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(isBusy)
+
+                Spacer()
+
+                if isBusy {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+
+            switch session.cloudflare.tunnelState {
+            case .running(let url):
+                HStack(spacing: 4) {
+                    Image(systemName: "globe")
+                        .font(.caption2)
+                        .foregroundColor(.green)
+                    Text(url)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.blue)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("URL 복사")
+                }
+                .padding(.leading, 20)
+            case .error(let msg):
+                Label(msg, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+                    .padding(.leading, 20)
+            default:
+                EmptyView()
+            }
         }
     }
 }

@@ -119,10 +119,16 @@ final class APIServer: ObservableObject {
 
             let session = try await sessionManager.createSession(config: config)
 
+            let appCfg = AppConfig.shared
+            let bindHost = appCfg.apiBind == "0.0.0.0" ? "127.0.0.1" : appCfg.apiBind
+            let localUrl = "http://\(bindHost):\(appCfg.apiPort)"
+
             let response = CreateSessionResponse(
                 sessionId: session.id,
                 status: session.status,
-                createdAt: session.createdAt
+                createdAt: session.createdAt,
+                localUrl: localUrl,
+                tunnelUrl: session.tunnelURL  // 터널 준비 전이면 nil; GET /sessions/:id 로 재조회 가능
             )
 
             return try await response.encodeResponse(status: .created, for: req)
@@ -140,6 +146,9 @@ final class APIServer: ObservableObject {
                 throw Abort(.notFound, reason: "Session not found")
             }
 
+            let statusAppCfg = AppConfig.shared
+            let statusBindHost = statusAppCfg.apiBind == "0.0.0.0" ? "127.0.0.1" : statusAppCfg.apiBind
+
             return SessionStatusResponse(
                 id: session.id,
                 status: session.status,
@@ -150,7 +159,9 @@ final class APIServer: ObservableObject {
                 stats: SessionStats(
                     messagesSent: session.messageCount,
                     uptimeSeconds: Int(Date().timeIntervalSince(session.createdAt))
-                )
+                ),
+                localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
+                tunnelUrl: session.tunnelURL
             )
         }
 
@@ -516,6 +527,8 @@ struct CreateSessionResponse: Content {
     let sessionId: String
     let status: Session.Status
     let createdAt: Date
+    let localUrl: String
+    let tunnelUrl: String?
 }
 
 struct SessionStatusResponse: Content {
@@ -524,6 +537,8 @@ struct SessionStatusResponse: Content {
     let workingDirectory: String
     let pendingApproval: ApprovalInfo?
     let stats: SessionStats
+    let localUrl: String
+    let tunnelUrl: String?
 }
 
 struct SessionStats: Content {

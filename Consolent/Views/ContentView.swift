@@ -289,6 +289,9 @@ struct SessionRow: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                // Cloudflare 터널 상태/URL 표시
+                cloudflareStatusView(session: session)
             }
 
             Spacer()
@@ -325,6 +328,54 @@ struct SessionRow: View {
         case .initializing: return .yellow
         case .error: return .red
         case .terminated: return .gray
+        }
+    }
+
+    @ViewBuilder
+    private func cloudflareStatusView(session: Session) -> some View {
+        switch session.cloudflare.tunnelState {
+        case .idle:
+            EmptyView()
+        case .installing:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("cloudflared 설치 중...")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+            }
+        case .starting:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("터널 연결 중...")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        case .running(let url):
+            HStack(spacing: 4) {
+                Image(systemName: "globe")
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+                Text(url)
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .onTapGesture {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url, forType: .string)
+                    }
+            }
+            .help("Cloudflare 터널 URL — 클릭하여 복사")
+        case .error(let msg):
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                Text("터널 오류: \(msg)")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+            }
         }
     }
 }
