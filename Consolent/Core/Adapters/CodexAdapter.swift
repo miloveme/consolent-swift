@@ -24,9 +24,9 @@ struct CodexAdapter: CLIAdapter {
 
     let exitCommand = "/exit"
 
-    /// 바이너리 경로 탐색 — nvm 설치 경로 추가 탐색.
-    /// macOS 앱(.app)에서 실행 시 nvm이 로드되지 않아 `which codex`가 실패할 수 있으므로
-    /// ~/.nvm/versions/node/*/bin/codex 를 직접 탐색한다.
+    /// 바이너리 경로 탐색 — nvm/fnm 설치 경로 추가 탐색.
+    /// macOS 앱(.app)에서 실행 시 nvm/fnm이 로드되지 않아 `which codex`가 실패할 수 있으므로
+    /// Node 버전 매니저별 경로를 직접 탐색한다.
     func findBinaryPath() -> String {
         let fm = FileManager.default
 
@@ -49,7 +49,34 @@ struct CodexAdapter: CLIAdapter {
             }
         }
 
-        // 3. login shell의 which 로 검색
+        // 3. fnm 설치 경로 탐색 (최신 버전 우선)
+        //    fnm은 multishell(PID 기반 임시 경로)을 사용하므로 하드코딩 불가.
+        //    대신 fnm이 관리하는 node-versions에서 고정 경로를 탐색한다.
+        //    실제 multishell 경로는 Session의 -li 플래그로 .zshrc의 eval "$(fnm env)"가 처리.
+        let fnmDirs = [
+            "~/.local/share/fnm/node-versions",   // fnm 기본 경로
+            "~/Library/Application Support/fnm/node-versions",  // macOS 대체 경로
+        ]
+        for fnmDir in fnmDirs {
+            let expanded = NSString(string: fnmDir).expandingTildeInPath
+            if let versions = try? fm.contentsOfDirectory(atPath: expanded) {
+                for version in versions.sorted().reversed() {
+                    let path = "\(expanded)/\(version)/installation/bin/codex"
+                    if fm.isExecutableFile(atPath: path) {
+                        return path
+                    }
+                }
+            }
+        }
+
+        // 4. fnm aliases (default, lts 등)
+        let fnmAliasDir = NSString(string: "~/.local/share/fnm/aliases/default/bin").expandingTildeInPath
+        let codexInAlias = "\(fnmAliasDir)/codex"
+        if fm.isExecutableFile(atPath: codexInAlias) {
+            return codexInAlias
+        }
+
+        // 5. login shell의 which 로 검색 (-li로 .zshrc 포함)
         if let resolved = resolveViaLoginShell(defaultBinaryName) {
             return resolved
         }
@@ -64,7 +91,8 @@ struct CodexAdapter: CLIAdapter {
         let pipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-l", "-c", "which \(binary)"]
+        // -li: login + interactive. .zshrc의 PATH 설정(nvm 등)을 포함하여 탐색.
+        process.arguments = ["-li", "-c", "which \(binary)"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 

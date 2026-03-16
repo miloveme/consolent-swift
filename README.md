@@ -486,12 +486,62 @@ protocol CLIAdapter {
 
 ---
 
+## 빌드 & 배포
+
+### 개발 빌드
+
+```bash
+# Xcode 프로젝트 생성 (최초 1회)
+./setup.sh
+
+# 빌드
+xcodebuild build -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+
+# 유닛 테스트
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+```
+
+### DMG 배포용 빌드
+
+App Store 배포가 불가능하므로(샌드박스 제약) DMG로 직접 배포합니다.
+
+```bash
+./scripts/build-dmg.sh
+```
+
+이 스크립트는 다음 단계를 자동으로 수행합니다:
+
+1. **XcodeGen** — `project.yml`에서 Xcode 프로젝트 재생성
+2. **Release 빌드** — `xcodebuild -configuration Release` (ad-hoc 서명)
+3. **DMG 생성** — `create-dmg`로 Applications 바로가기 포함 DMG 생성 (없으면 `hdiutil` 폴백)
+
+결과물: `build/Consolent.dmg`
+
+```bash
+# 설치
+open build/Consolent.dmg
+# → Consolent.app을 Applications로 드래그
+```
+
+**선택 의존성:**
+
+| 도구 | 필수 | 용도 | 설치 |
+|------|------|------|------|
+| [XcodeGen](https://github.com/yonaskolb/XcodeGen) | 권장 | 프로젝트 생성 | `brew install xcodegen` |
+| [create-dmg](https://github.com/create-dmg/create-dmg) | 선택 | 예쁜 DMG (Applications 바로가기) | `brew install create-dmg` |
+
+> `create-dmg` 없이도 `hdiutil`로 기본 DMG가 생성됩니다.
+
+---
+
 ## 제약 사항
 
 - macOS 전용 (PTY + 네이티브 앱)
 - CLI 도구가 로컬에 설치/로그인 필요
 - CLI [TUI](#term-tui) 변경 시 [Adapter](#term-adapter) 업데이트 필요
-- App Store 불가 (샌드박스 제약) — 직접 배포
+- App Store 불가 (샌드박스 제약) — DMG 직접 배포 (`scripts/build-dmg.sh`)
 - OpenAI API `stream: true`는 SSE 형식으로 지원하나, 응답 수신 후 일괄 전송 (실시간 토큰 스트리밍 아님)
 
 ---

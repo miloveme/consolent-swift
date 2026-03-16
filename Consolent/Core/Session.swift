@@ -89,7 +89,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let binaryPath = adapter.findBinaryPath()
 
         // shell에서 CLI를 실행하는 명령 구성
-        var shellArgs = ["-l", "-c"]
+        // -li: login + interactive. interactive 플래그가 있어야 .zshrc가 소스되어
+        // nvm, Homebrew 등 사용자 PATH 설정이 적용된다.
+        var shellArgs = ["-li", "-c"]
         let cliCommand = adapter.buildCommand(
             binaryPath: binaryPath,
             args: config.cliArgs,

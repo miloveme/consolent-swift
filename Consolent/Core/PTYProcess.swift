@@ -277,7 +277,10 @@ final class PTYProcess: @unchecked Sendable {
         let pipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-l", "-c", "env"]
+        // -li: login + interactive. interactive 플래그가 있어야 .zshrc가 소스되어
+        // nvm, Homebrew 등 사용자 PATH 설정을 모두 캡처할 수 있다.
+        // (macOS에서 많은 사용자가 PATH를 .zshrc에 설정)
+        process.arguments = ["-li", "-c", "env"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 

@@ -93,7 +93,8 @@ extension CLIAdapter {
         let pipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-l", "-c", "which \(binary)"]
+        // -li: login + interactive. .zshrc의 PATH 설정(nvm 등)을 포함하여 탐색.
+        process.arguments = ["-li", "-c", "which \(binary)"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
