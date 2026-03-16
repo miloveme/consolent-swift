@@ -1,5 +1,6 @@
 import Foundation
 import SwiftTerm
+import Combine
 
 /// 단일 Claude Code 세션.
 /// PTY 프로세스 + 출력 버퍼 + 상태 + 응답 감지를 관리한다.
@@ -64,6 +65,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private let parser = OutputParser()
     private let maxBufferSize = 10 * 1024 * 1024  // 10MB
 
+    /// 세션별 Cloudflare Quick Tunnel 관리자
+    let cloudflare = CloudflareManager()
+    private var cancellables = Set<AnyCancellable>()
+
+    /// 현재 활성 터널 URL (cloudflared 연결 완료 후 설정됨)
+    var tunnelURL: String? { cloudflare.tunnelURL }
+
     // 메시지 응답 대기용
     private var responseContinuation: CheckedContinuation<MessageResponse, Error>?
     private var currentMessageId: String?
@@ -79,6 +87,12 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.createdAt = Date()
         self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows))
         setupCallbacks()
+
+        // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용)
+        cloudflare.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Lifecycle
@@ -181,6 +195,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.ptyProcess.terminate()
         }
+
+        // 세션 종료 시 Cloudflare 터널도 함께 종료
+        cloudflare.stop()
 
         DispatchQueue.main.async { [self] in
             status = .terminated

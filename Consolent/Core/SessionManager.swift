@@ -42,7 +42,7 @@ final class SessionManager: ObservableObject {
             }
         }
 
-        // Claude Code 시작
+        // CLI 시작
         try await session.start()
 
         return session
@@ -63,7 +63,8 @@ final class SessionManager: ObservableObject {
                 workingDirectory: session.config.workingDirectory,
                 createdAt: session.createdAt,
                 lastActivity: Date(),
-                messageCount: session.messageCount
+                messageCount: session.messageCount,
+                tunnelUrl: session.tunnelURL
             )
         }.sorted { $0.createdAt < $1.createdAt }
     }
@@ -94,6 +95,20 @@ final class SessionManager: ObservableObject {
         guard let id = selectedSessionId else { return nil }
         return sessions[id]
     }
+
+    // MARK: - Cloudflare Tunnel (세션별)
+
+    func startTunnel(sessionId: String) {
+        guard let session = sessions[sessionId],
+              session.status != .terminated,
+              case .idle = session.cloudflare.tunnelState else { return }
+        let port = AppConfig.shared.apiPort
+        Task { await session.cloudflare.start(port: port) }
+    }
+
+    func stopTunnel(sessionId: String) {
+        sessions[sessionId]?.cloudflare.stop()
+    }
 }
 
 // MARK: - Info DTO
@@ -106,6 +121,7 @@ struct SessionInfo: Codable {
     let createdAt: Date
     let lastActivity: Date
     let messageCount: Int
+    var tunnelUrl: String?
 }
 
 // MARK: - Errors
