@@ -56,10 +56,17 @@ final class PTYProcess: @unchecked Sendable {
             ws_ypixel: 0
         )
 
+        // fork 전에 환경 변수와 인자를 준비 (Foundation API는 fork 후 자식에서 사용 불가)
+        let cEnviron = buildEnvironment(base: env)
+        let cArgs = buildCArgs(executable: executable, args: args)
+
         var masterFd: Int32 = 0
         let pid = forkpty(&masterFd, nil, nil, &winSize)
 
         if pid < 0 {
+            // fork 실패 시 메모리 정리
+            cArgs.forEach { $0?.deallocate() }
+            cEnviron.forEach { $0?.deallocate() }
             throw PTYError.forkFailed(errno: errno)
         }
 
@@ -70,19 +77,14 @@ final class PTYProcess: @unchecked Sendable {
                 _exit(1)
             }
 
-            // 환경 변수 설정
-            let environ = buildEnvironment(base: env)
-            let cArgs = buildCArgs(executable: executable, args: args)
-
-            defer {
-                cArgs.forEach { $0?.deallocate() }
-                environ.forEach { $0?.deallocate() }
-            }
-
-            execve(executable, cArgs, environ)
+            execve(executable, cArgs, cEnviron)
             // execve가 실패한 경우
             _exit(127)
         }
+
+        // ── Parent process ── 메모리 정리 (execve 성공 시 자식은 이미 교체됨)
+        cArgs.forEach { $0?.deallocate() }
+        cEnviron.forEach { $0?.deallocate() }
 
         // ── Parent process ──
         self.pid = pid
@@ -218,16 +220,22 @@ final class PTYProcess: @unchecked Sendable {
     private func buildEnvironment(base: [String: String]?) -> [UnsafeMutablePointer<CChar>?] {
         var envDict: [String: String] = [:]
 
-        // 현재 환경 변수 복사
-        var current = environ
-        while let envp = current.pointee {
-            let str = String(cString: envp)
-            if let eqIdx = str.firstIndex(of: "=") {
-                let key = String(str[str.startIndex..<eqIdx])
-                let value = String(str[str.index(after: eqIdx)...])
-                envDict[key] = value
+        // login shell의 전체 환경 캡처 (캐시된 결과 사용)
+        let loginEnv = Self.captureLoginShellEnvironment()
+        if !loginEnv.isEmpty {
+            envDict = loginEnv
+        } else {
+            // 폴백: 현재 프로세스 환경 복사
+            var current = environ
+            while let envp = current.pointee {
+                let str = String(cString: envp)
+                if let eqIdx = str.firstIndex(of: "=") {
+                    let key = String(str[str.startIndex..<eqIdx])
+                    let value = String(str[str.index(after: eqIdx)...])
+                    envDict[key] = value
+                }
+                current = current.advanced(by: 1)
             }
-            current = current.advanced(by: 1)
         }
 
         // 기본 터미널 설정
@@ -248,6 +256,57 @@ final class PTYProcess: @unchecked Sendable {
         }
         cEnv.append(nil)
         return cEnv
+    }
+
+    /// 사용자 login shell의 전체 환경 변수를 캡처한다.
+    /// macOS 앱(.app)은 최소 환경으로 시작되므로, login shell을 한 번 실행하여
+    /// nvm, Homebrew 등 사용자 환경을 가져온다. 결과를 캐시.
+    private static var cachedLoginEnv: [String: String]?
+    private static let envLock = NSLock()
+
+    private static func captureLoginShellEnvironment() -> [String: String] {
+        envLock.lock()
+        defer { envLock.unlock() }
+
+        if let cached = cachedLoginEnv {
+            return cached
+        }
+
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        let pipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-l", "-c", "env"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8),
+                  process.terminationStatus == 0 else {
+                cachedLoginEnv = [:]
+                return [:]
+            }
+
+            var envDict: [String: String] = [:]
+            for line in output.components(separatedBy: "\n") {
+                if let eqIdx = line.firstIndex(of: "=") {
+                    let key = String(line[line.startIndex..<eqIdx])
+                    let value = String(line[line.index(after: eqIdx)...])
+                    envDict[key] = value
+                }
+            }
+
+            cachedLoginEnv = envDict
+            return envDict
+        } catch {
+            cachedLoginEnv = [:]
+            return [:]
+        }
     }
 }
 
