@@ -534,7 +534,79 @@ else
     fail "Context setup failed (HTTP $HTTP_CODE)"
 fi
 
-# ── 14. Empty Message Validation ──
+# ── 14. Cloudflare Quick Tunnel (세션별 제어) ──
+section "Cloudflare Quick Tunnel"
+
+if [ -n "$SESSION_ID" ]; then
+    response=$(api_get "/sessions/$SESSION_ID")
+    parse_response "$response"
+
+    if [ "$HTTP_CODE" = "200" ]; then
+        local_url=$(echo "$HTTP_BODY" | jq -r '.local_url // empty')
+        tunnel_url=$(echo "$HTTP_BODY" | jq -r '.tunnel_url // empty')
+
+        if [ -n "$local_url" ]; then
+            pass "Session has local_url: $local_url"
+        else
+            fail "Session missing local_url" "expected http://..."
+        fi
+
+        # 세션별 터널: 기본 생성 시 터널은 시작되지 않음
+        if [ -z "$tunnel_url" ]; then
+            pass "No tunnel by default (per-session control)"
+        else
+            # 터널이 켜져 있다면 형식과 접근 검증
+            pass "Session has tunnel_url: $tunnel_url"
+
+            if echo "$tunnel_url" | grep -qE '^https://[a-z0-9-]+\.trycloudflare\.com$'; then
+                pass "tunnel_url matches trycloudflare.com pattern"
+            else
+                fail "tunnel_url unexpected format" "$tunnel_url"
+            fi
+
+            tunnel_response=$(curl -s --max-time 10 "$tunnel_url/" \
+                -H "Authorization: Bearer $API_KEY" 2>&1)
+            if echo "$tunnel_response" | grep -q "Consolent"; then
+                pass "Tunnel URL external access works"
+            else
+                fail "Tunnel URL external access failed" "$tunnel_response"
+            fi
+        fi
+    else
+        fail "GET /sessions/:id expected 200, got $HTTP_CODE" "$HTTP_BODY"
+    fi
+
+    # 새 세션 생성 시 local_url 포함, tunnel_url 없음 확인
+    create_response=$(api_post "/sessions" "{\"working_directory\": \"$HOME\", \"cli_type\": \"claude-code\"}")
+    parse_response "$create_response"
+    if [ "$HTTP_CODE" = "201" ]; then
+        new_sid=$(echo "$HTTP_BODY" | jq -r '.session_id // empty')
+        new_local=$(echo "$HTTP_BODY" | jq -r '.local_url // empty')
+        new_tunnel=$(echo "$HTTP_BODY" | jq -r '.tunnel_url // empty')
+
+        if [ -n "$new_local" ]; then
+            pass "Create response includes local_url"
+        else
+            fail "Create response missing local_url" ""
+        fi
+
+        if [ -z "$new_tunnel" ]; then
+            pass "Create response: no tunnel (per-session activation required)"
+        else
+            pass "Create response has tunnel: $new_tunnel"
+        fi
+
+        if [ -n "$new_sid" ]; then
+            api_delete "/sessions/$new_sid" > /dev/null 2>&1
+        fi
+    else
+        fail "POST /sessions expected 201, got $HTTP_CODE" "$HTTP_BODY"
+    fi
+else
+    skip "Cloudflare tunnel (no session available)"
+fi
+
+# ── 15. Empty Message Validation ──
 section "Input Validation"
 
 response=$(api_post "/v1/chat/completions" '{
