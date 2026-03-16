@@ -47,6 +47,7 @@ final class OutputParser {
     var screenBufferChecker: (() -> String)?
     private var monitoringStartTime: Date?
 
+    private var isMonitoring = false
     private var lastOutputTime: Date = Date()
     private var idleTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "com.consolent.parser.timer")
@@ -127,6 +128,7 @@ final class OutputParser {
     /// 응답 완료는 idle 타이머 + 콘텐츠 확인으로 감지한다.
     func processOutput(_ text: String) {
         lastOutputTime = Date()
+        guard isMonitoring else { return }
         resetIdleTimer()
 
         let stripped = OutputParser.stripANSI(text)
@@ -150,6 +152,7 @@ final class OutputParser {
 
     /// idle 타이머를 시작한다. 메시지 전송 시 호출.
     func startMonitoring() {
+        isMonitoring = true
         lastOutputTime = Date()
         monitoringStartTime = Date()
         recentStrippedText = ""
@@ -159,6 +162,7 @@ final class OutputParser {
 
     /// 모니터링을 중지한다.
     func stopMonitoring() {
+        isMonitoring = false
         cancelIdleTimer()
         recentStrippedText = ""
     }

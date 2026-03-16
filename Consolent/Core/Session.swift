@@ -97,12 +97,15 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         )
         shellArgs.append(cliCommand)
 
+        // PTY는 기본 크기(120x40)로 시작.
+        // headlessTerminal(500행)은 별도 크기로 동일 데이터를 수신하여 긴 응답 마커를 보존.
+        // PTY를 500행으로 하면 커서가 row 499에 → TerminalView에서 welcome 안 보임.
+        // sizeChanged가 실제 표시 크기로 resize 해줌.
         try ptyProcess.start(
             executable: config.shell,
             args: shellArgs,
             cwd: config.workingDirectory,
-            env: config.env,
-            rows: UInt16(AppConfig.shared.headlessTerminalRows)
+            env: config.env
         )
 
         // CLI 초기화 완료 대기 (프롬프트 출현)
@@ -122,20 +125,26 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         currentResponseBuffer = Data()
         messageStartTime = Date()
 
-        // 콘텐츠 체크 모드로 응답 완료 감지
-        parser.completionMode = .contentCheck
-        parser.idleTimeout = 1.0
-        parser.startMonitoring()
-
-        // PTY에 입력 (텍스트와 Enter를 분리하여 TUI가 제출을 인식하도록 함)
-        try ptyProcess.write(text)
-        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        try ptyProcess.write("\r")
         await MainActor.run { messageCount += 1 }
 
-        // 응답 완료 대기
+        // 응답 완료 대기 — continuation을 먼저 설정하여 race condition 방지
         return try await withCheckedThrowingContinuation { continuation in
             self.responseContinuation = continuation
+
+            parser.completionMode = .contentCheck
+            parser.idleTimeout = 1.0
+            parser.startMonitoring()
+
+            do {
+                try ptyProcess.write(text)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in
+                    try? self.ptyProcess.write("\r")
+                }
+            } catch {
+                self.responseContinuation = nil
+                continuation.resume(throwing: error)
+                return
+            }
 
             // 타임아웃 설정
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
@@ -287,8 +296,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     }
 
     private func completeResponse(signal: OutputParser.CompletionSignal) {
-        guard let continuation = responseContinuation,
-              let messageId = currentMessageId else { return }
+        guard let continuation = responseContinuation else {
+            print("[Session] ⚠️ completeResponse: no continuation! signal=\(signal)")
+            return
+        }
+        guard let messageId = currentMessageId else {
+            print("[Session] ⚠️ completeResponse: no messageId! signal=\(signal)")
+            return
+        }
 
         parser.stopMonitoring()
         responseContinuation = nil
