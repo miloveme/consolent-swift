@@ -39,7 +39,7 @@ final class CodexAdapterTests: XCTestCase {
     // MARK: - Signals
 
     func testReadySignal() {
-        XCTAssertEqual(adapter.readySignal, "? for shortcuts")
+        XCTAssertEqual(adapter.readySignal, "% left")
     }
 
     func testProcessingSignal() {
@@ -54,12 +54,12 @@ final class CodexAdapterTests: XCTestCase {
     }
 
     func testHasProcessingStarted_noSignal() {
-        let screen = "? for shortcuts\nAsk Codex to do anything"
+        let screen = "gpt-5.3-codex medium · 96% left · ~/projects"
         XCTAssertFalse(adapter.hasProcessingStarted(screenBuffer: screen))
     }
 
     func testIsResponseComplete_withReadySignal() {
-        let screen = "• 응답 완료\n? for shortcuts"
+        let screen = "• 응답 완료\ngpt-5.3-codex medium · 96% left · ~/projects"
         XCTAssertTrue(adapter.isResponseComplete(screenBuffer: screen))
     }
 
@@ -70,7 +70,7 @@ final class CodexAdapterTests: XCTestCase {
 
     func testIsResponseComplete_readyAndProcessingBoth() {
         // ready 신호와 processing 신호가 동시에 있으면 → ready 우선 (완료)
-        let screen = "? for shortcuts\nesc to interrupt"
+        let screen = "96% left\nesc to interrupt"
         XCTAssertTrue(adapter.isResponseComplete(screenBuffer: screen))
     }
 
@@ -217,11 +217,11 @@ final class CodexAdapterTests: XCTestCase {
 
     // MARK: - cleanResponse: TUI chrome 필터
 
-    func testCleanResponse_filtersShortcutsLine() {
+    func testCleanResponse_filtersStatusBarLine() {
         let screen = """
         › hello
         • 응답입니다
-        ? for shortcuts
+        gpt-5.3-codex medium · 96% left · ~/projects
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "응답입니다")
     }
@@ -355,6 +355,55 @@ final class CodexAdapterTests: XCTestCase {
         """
         let result = adapter.cleanResponse(screen)
         XCTAssertEqual(result, "안녕하세요, 무엇을 도와드릴까요?")
+    }
+
+    // MARK: - cleanResponse: 입력 플레이스홀더 처리
+
+    func testCleanResponse_preservesResponseBeforeInputPlaceholder() {
+        // Codex는 응답 후 입력 플레이스홀더(› Find and fix...)를 표시한다.
+        // 이 플레이스홀더가 수집된 응답을 클리어해서는 안 됨.
+        let screen = """
+        ╭────────────────────────────────────────────────────╮
+        │ >_ OpenAI Codex (v0.114.0)                         │
+        │                                                    │
+        │ model:     gpt-5.3-codex medium   /model to change │
+        │ directory: ~/Documents/Dev/AI/codex_projects       │
+        ╰────────────────────────────────────────────────────╯
+
+          Tip: New Try the Codex App with 2x rate limits until April 2nd.
+
+        › Say just the word OK and nothing else.
+
+        • OK
+
+        › Find and fix a bug in @filename
+
+          gpt-5.3-codex medium · 96% left · ~/Documents/Dev/AI/codex_projects
+        """
+        XCTAssertEqual(adapter.cleanResponse(screen), "OK")
+    }
+
+    func testCleanResponse_lastTurnResponseBeforePlaceholder() {
+        // 멀티턴 + 입력 플레이스홀더: 마지막 턴의 응답만 유지
+        let screen = """
+        › first question
+        • first answer
+        › second question
+        • second answer is here
+        › Describe a bug or paste a URL to a GitHub Issue
+        """
+        XCTAssertEqual(adapter.cleanResponse(screen), "second answer is here")
+    }
+
+    func testCleanResponse_newTurnOverridesBackup() {
+        // 새 턴에서 실제 응답이 있으면 이전 백업이 아닌 새 응답을 사용
+        let screen = """
+        › first question
+        • first answer
+        › second question
+        • second answer
+        """
+        XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
     }
 
     // MARK: - Approval Patterns

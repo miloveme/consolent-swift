@@ -24,9 +24,69 @@ struct CodexAdapter: CLIAdapter {
 
     let exitCommand = "/exit"
 
-    /// Codex ready 신호: 입력 대기 시 하단에 표시.
-    /// Claude Code와 동일한 패턴을 사용한다.
-    let readySignal = "? for shortcuts"
+    /// 바이너리 경로 탐색 — nvm 설치 경로 추가 탐색.
+    /// macOS 앱(.app)에서 실행 시 nvm이 로드되지 않아 `which codex`가 실패할 수 있으므로
+    /// ~/.nvm/versions/node/*/bin/codex 를 직접 탐색한다.
+    func findBinaryPath() -> String {
+        let fm = FileManager.default
+
+        // 1. 하드코딩된 경로
+        for path in defaultBinaryPaths {
+            let expanded = NSString(string: path).expandingTildeInPath
+            if fm.isExecutableFile(atPath: expanded) {
+                return expanded
+            }
+        }
+
+        // 2. nvm 설치 경로 탐색 (최신 버전 우선)
+        let nvmDir = NSString(string: "~/.nvm/versions/node").expandingTildeInPath
+        if let versions = try? fm.contentsOfDirectory(atPath: nvmDir) {
+            for version in versions.sorted().reversed() {
+                let path = "\(nvmDir)/\(version)/bin/codex"
+                if fm.isExecutableFile(atPath: path) {
+                    return path
+                }
+            }
+        }
+
+        // 3. login shell의 which 로 검색
+        if let resolved = resolveViaLoginShell(defaultBinaryName) {
+            return resolved
+        }
+
+        return defaultBinaryName
+    }
+
+    /// login shell에서 바이너리 경로를 찾는다.
+    private func resolveViaLoginShell(_ binary: String) -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        let pipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-l", "-c", "which \(binary)"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let path, !path.isEmpty, process.terminationStatus == 0 {
+                return path
+            }
+        } catch {}
+
+        return nil
+    }
+
+    /// Codex ready 신호: 입력 대기 시 하단 상태바에 표시.
+    /// v0.114.0+에서는 "gpt-... · 96% left · ~/..." 형태.
+    let readySignal = "% left"
 
     /// Codex 처리 중 신호: "• Working (0s • esc to interrupt)" 형태.
     /// Claude Code와 유사한 패턴.
@@ -70,6 +130,7 @@ struct CodexAdapter: CLIAdapter {
         //   - phase 1: 사용자 입력 감지됨 (› 이후) → • 나올 때까지 스킵
         //   - phase 2: 어시스턴트 응답 수집 중 (• 이후)
         var responseLines: [String] = []
+        var lastResponseLines: [String] = []  // › 이전에 수집된 응답 백업
         var phase = 0  // 0=초기, 1=사용자입력구간, 2=어시스턴트응답
 
         for line in lines {
@@ -83,8 +144,12 @@ struct CodexAdapter: CLIAdapter {
 
             // ── 사용자 입력 시작 (› 프롬프트) ──
             // TUI chrome 필터보다 먼저 체크
+            // Codex는 응답 후 입력 플레이스홀더(› Find and fix...)를 표시하므로
+            // 수집된 응답을 백업해두고, 이후 새 응답이 없으면 복원한다.
             if trimmed.hasPrefix("› ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+                if phase == 2 && !responseLines.isEmpty {
+                    lastResponseLines = responseLines
+                }
                 responseLines = []
                 phase = 1
                 continue
@@ -152,6 +217,11 @@ struct CodexAdapter: CLIAdapter {
             if phase == 2 {
                 responseLines.append(line)
             }
+        }
+
+        // 마지막 › 이후 새 응답이 없으면 (입력 플레이스홀더였음) → 이전 응답 복원
+        if responseLines.isEmpty && !lastResponseLines.isEmpty {
+            responseLines = lastResponseLines
         }
 
         // Step 3: 연속 빈 줄 정리
@@ -256,6 +326,7 @@ struct CodexAdapter: CLIAdapter {
             "? for shortcuts", "esc to interrupt",
             "shift+tab to cycle", "shift+tab",
             "context left", "context remaining",
+            "% left", "/model to change",
             "ask codex to do anything",
         ]
         for pattern in quickPatterns {

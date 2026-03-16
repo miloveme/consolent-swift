@@ -115,8 +115,6 @@ struct TerminalViewWrapper: NSViewRepresentable {
 
 /// 세션이 없을 때 보여주는 빈 상태 뷰
 struct EmptyTerminalView: View {
-    @State private var isAnimating = false
-    
     var body: some View {
         VStack(spacing: 20) {
             ZStack {
@@ -130,17 +128,12 @@ struct EmptyTerminalView: View {
                     )
                     .frame(width: 100, height: 100)
                     .blur(radius: 10)
-                
+
                 Image(systemName: "terminal.fill")
                     .font(.system(size: 40))
                     .symbolRenderingMode(.multicolor)
                     .foregroundColor(Color.blue)
                     .shadow(color: .black.opacity(0.3), radius: 5, x: 0, y: 3)
-            }
-            .scaleEffect(isAnimating ? 1.05 : 1.0)
-            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isAnimating)
-            .onAppear {
-                isAnimating = true
             }
 
             VStack(spacing: 8) {
