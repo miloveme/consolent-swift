@@ -141,6 +141,22 @@ struct ClaudeCodeAdapter: CLIAdapter {
         return text
     }
 
+    // MARK: - Error Detection
+
+    /// 화면 텍스트에서 API 에러를 감지한다.
+    /// "api error"는 matchesTUIChrome()에서 TUI chrome으로 필터링되므로,
+    /// cleanResponse()가 빈 응답을 반환할 때 이 메서드로 에러 메시지를 복구한다.
+    func detectError(_ screenText: String) -> String? {
+        let lines = screenText.components(separatedBy: "\n")
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.lowercased().contains("api error") {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
     // MARK: - Private Helpers
 
     private static func isBoxBorderLine(_ text: String) -> Bool {

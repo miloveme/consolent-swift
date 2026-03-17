@@ -332,8 +332,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
         // Headless 터미널 버퍼에서 화면 텍스트 읽기 (항상 사용 가능)
         let screenText = readHeadlessBuffer()
-        let cleanText = adapter.cleanResponse(screenText)
+        var cleanText = adapter.cleanResponse(screenText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 빈 응답일 때 에러 감지 — TUI chrome 필터가 걸러낸 에러 메시지 복구
+        if cleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
+            cleanText = errorMsg
+        }
 
         // 디버그: 빈 응답일 때 screen buffer 로그
         if cleanText.isEmpty {
