@@ -82,7 +82,9 @@ struct GeminiAdapter: CLIAdapter {
             // ── 어시스턴트 응답 시작 (✦ 마커) ──
             // TUI chrome 필터보다 먼저 체크해야 함!
             // 응답 내용에 "gemini cli" 등 TUI chrome 패턴이 포함될 수 있기 때문.
+            // 새 ✦를 만나면 이전 응답을 클리어 → 항상 마지막 턴의 응답만 반환.
             if trimmed.hasPrefix("✦") {
+                responseLines = []
                 phase = 2
 
                 let stripped = trimmed.replacingOccurrences(of: "^✦\\s*", with: "", options: .regularExpression)
@@ -101,8 +103,12 @@ struct GeminiAdapter: CLIAdapter {
             // ── 사용자 입력 시작 (> / ! / * 프롬프트) ──
             // TUI chrome 뒤에 배치: Gemini 입력 필드 "* Type your message"가
             // hasPrefix("* ")에 매칭되어 responseLines를 클리어하는 것을 방지
-            if trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+            //
+            // phase 2(응답 수집 중)에서는 무시:
+            //   - 응답에 마크다운 불릿("* 항목")이나 인용("> 내용")이 포함될 수 있음
+            //   - 실제 새 턴은 항상 ▀▀▀ 블록바 이후에 나타남 → ▀▀▀이 phase를 0으로 리셋
+            //   - 따라서 phase 0/1에서만 턴 마커로 인식해도 멀티턴이 정상 동작함
+            if phase != 2 && (trimmed.hasPrefix("> ") || trimmed.hasPrefix("! ") || trimmed.hasPrefix("* ")) {
                 responseLines = []
                 phase = 1
                 continue

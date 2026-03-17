@@ -91,10 +91,26 @@ final class GeminiAdapterTests: XCTestCase {
     }
 
     func testCleanResponse_lastTurnOnly() {
+        // ✦ 마커에서 responseLines를 클리어하므로 항상 마지막 턴만 반환
         let screen = """
         > first question
         ✦ first answer
         > second question
+        ✦ second answer
+        """
+        XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
+    }
+
+    func testCleanResponse_lastTurnOnlyWithBlockBars() {
+        // 실제 Gemini 화면: ▀▀▀/▄▄▄ 블록바 포함 멀티턴
+        let screen = """
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > first question
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ first answer
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > second question
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
         ✦ second answer
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
@@ -405,6 +421,87 @@ final class GeminiAdapterTests: XCTestCase {
         """
         let result = adapter.cleanResponse(screen)
         XCTAssertEqual(result, "OK", "입력 필드 플레이스홀더 '* Type your message'가 응답을 클리어하면 안 됨")
+    }
+
+    func testCleanResponse_markdownBulletsInResponse() {
+        // 응답에 마크다운 불릿("* 항목")이 포함된 경우
+        // "* "가 YOLO 모드 입력 마커로 오인되어 응답이 비어버리는 버그 수정 확인
+        let screen = """
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > 텔레그램 봇을 만들어줘
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ 텔레그램 봇을 만들려면 다음 단계를 따르세요:
+
+        1. 필요한 라이브러리:
+
+        * python-telegram-bot 설치
+        * python-dotenv로 환경변수 관리
+        * openai SDK 연동
+
+        2. 코드 작성:
+
+                                                          ? for shortcuts
+        ──────────────────────────────────────────────────────────────────
+         YOLO ctrl+y                                  1 GEMINI.md file
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         *   Type your message or @path/to/file
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+         ~/Documents/Dev/AI/gemini                     /model Auto (Gemini 3)
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("텔레그램 봇을 만들려면"), "응답 시작 부분이 보존되어야 함")
+        XCTAssertTrue(result.contains("* python-telegram-bot"), "마크다운 불릿이 응답에 포함되어야 함")
+        XCTAssertTrue(result.contains("* python-dotenv"), "마크다운 불릿이 응답에 포함되어야 함")
+        XCTAssertTrue(result.contains("* openai SDK"), "마크다운 불릿이 응답에 포함되어야 함")
+        XCTAssertTrue(result.contains("2. 코드 작성"), "불릿 이후 내용도 보존되어야 함")
+        XCTAssertFalse(result.contains("Type your message"), "입력 필드 플레이스홀더는 제거되어야 함")
+    }
+
+    func testCleanResponse_blockquoteInResponse() {
+        // 응답에 인용문("> 내용")이 포함된 경우
+        let screen = """
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > 코드 리뷰해줘
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ 코드 리뷰 결과입니다:
+
+        > 참고: 이 패턴은 Apple 공식 문서에서 권장합니다.
+
+        전체적으로 잘 작성되었습니다.
+
+                                                          ? for shortcuts
+        ──────────────────────────────────────────────────────────────────
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         *   Type your message or @path/to/file
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("코드 리뷰 결과입니다"), "응답 시작 부분이 보존되어야 함")
+        XCTAssertTrue(result.contains("> 참고:"), "인용문이 응답에 포함되어야 함")
+        XCTAssertTrue(result.contains("전체적으로 잘 작성되었습니다"), "인용문 이후 내용도 보존되어야 함")
+    }
+
+    func testCleanResponse_multiTurnWithBlockBars() {
+        // 실제 Gemini 멀티턴: ▀▀▀/▄▄▄ 블록바가 있어 phase가 정상 리셋됨
+        let screen = """
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > 첫 번째 질문
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ 첫 번째 응답입니다.
+
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+         > 두 번째 질문
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ 두 번째 응답입니다.
+
+        * 항목 A
+        * 항목 B
+        """
+        let result = adapter.cleanResponse(screen)
+        XCTAssertFalse(result.contains("첫 번째"), "이전 턴 응답은 포함되지 않아야 함")
+        XCTAssertTrue(result.contains("두 번째 응답입니다"), "마지막 턴 응답이 보존되어야 함")
+        XCTAssertTrue(result.contains("* 항목 A"), "마크다운 불릿이 포함되어야 함")
+        XCTAssertTrue(result.contains("* 항목 B"), "마크다운 불릿이 포함되어야 함")
     }
 
     func testCleanResponse_whoAreYouResponse() {
