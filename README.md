@@ -390,6 +390,7 @@ Consolent/
 │   ├── SessionManager.swift        # 전역 세션 매니저
 │   ├── OutputParser.swift          # [ANSI](#term-ansi) 파싱, 완료 감지, 승인 감지
 │   ├── PTYProcess.swift            # forkpty() 래퍼
+│   ├── CloudflareManager.swift     # Cloudflare Quick Tunnel 관리
 │   └── Adapters/
 │       ├── ClaudeCodeAdapter.swift
 │       ├── CodexAdapter.swift
@@ -415,6 +416,7 @@ Consolent/
 | PTY            | `forkpty()` (POSIX)                         |
 | HTTP/WS Server | Vapor (embedded)                            |
 | 출력 파싱        | 4단계 [ANSI](#term-ansi) strip + [Adapter](#term-adapter)별 [TUI 크롬](#term-tui-chrome) 제거 |
+| 터널링          | Cloudflare Quick Tunnel (`cloudflared`)                  |
 
 ### CLIAdapter 패턴
 
@@ -477,9 +479,86 @@ protocol CLIAdapter {
 
 ---
 
+## Cloudflare Quick Tunnel
+
+Consolent API를 외부에서 접근 가능하게 만들기 위한 [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) 통합입니다. Cloudflare 계정 없이, 세션 단위로 임시 HTTPS 터널을 생성합니다.
+
+```
+외부 클라이언트 ──▶ https://xxx.trycloudflare.com ──▶ cloudflared ──▶ localhost:9999 ──▶ Consolent API
+```
+
+### 사용법
+
+#### UI에서 터널 켜기
+
+1. **Settings(⚙) → API Server 탭 → Cloudflare Quick Tunnel** 섹션
+2. 원하는 세션의 토글을 활성화
+3. 터널 URL이 생성되면 표시됨 — 클릭하여 복사 가능
+
+> `cloudflared` 미설치 시 자동으로 Homebrew를 통해 설치합니다.
+
+#### API에서 터널 URL 확인
+
+터널을 활성화한 후 세션 상태를 조회하면 `tunnel_url`이 포함됩니다:
+
+```bash
+curl http://localhost:9999/sessions/s_a1b2c3 \
+  -H "Authorization: Bearer cst_YOUR_API_KEY"
+```
+
+```json
+{
+  "id": "s_a1b2c3",
+  "status": "ready",
+  "local_url": "http://127.0.0.1:9999",
+  "tunnel_url": "https://considering-cotton-seafood-peninsula.trycloudflare.com"
+}
+```
+
+#### 터널 URL로 외부에서 API 호출
+
+```bash
+curl https://considering-cotton-seafood-peninsula.trycloudflare.com/v1/chat/completions \
+  -H "Authorization: Bearer cst_YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-code",
+    "messages": [{"role": "user", "content": "프로젝트 구조 설명해줘"}]
+  }'
+```
+
+### 세션별 독립 터널
+
+터널은 **세션 단위**로 관리됩니다:
+
+- 세션 생성 시 터널은 기본적으로 **꺼진 상태** (`tunnel_url: null`)
+- 각 세션의 터널을 개별적으로 켜고 끌 수 있음
+- 세션 종료 시 해당 터널도 자동 종료
+- 모든 터널은 같은 API 포트(`localhost:9999`)를 프록시
+
+### 터널 상태
+
+| 상태 | 설명 |
+|------|------|
+| `idle` | 터널 미시작 |
+| `installing` | `cloudflared` 자동 설치 중 (최초 1회) |
+| `starting` | 터널 연결 중 |
+| `running` | 터널 활성 — 외부 URL로 접근 가능 |
+| `error` | 설치 또는 연결 실패 |
+
+### 주의사항
+
+- 터널 URL은 `cloudflared` 프로세스를 재시작할 때마다 변경됩니다
+- Quick Tunnel은 Cloudflare 계정 불필요, 임시 URL만 제공
+- **API Key 인증은 터널에서도 동일하게 적용됩니다** — 터널 URL을 알아도 API Key 없이는 접근 불가
+- `cloudflared`가 없으면 Homebrew로 자동 설치 (`brew install cloudflared`). Homebrew가 없으면 수동 설치 필요
+
+---
+
 ## 보안
 
 - **로컬 전용**: 기본 `127.0.0.1` 바인딩. 외부 접근 차단
+- **Cloudflare 터널**: 외부 접근 시 세션별 Quick Tunnel 활성화 가능. API Key 인증 필수
 - **CLI 인증 불필요**: 이미 로그인된 로컬 CLI를 그대로 사용
 - **API Key 로컬 생성**: `cst_` prefix Bearer token. 원격 서버 미경유
 - **데이터 경로**: Client → Consolent → PTY → CLI → 원격 서버 (Consolent은 I/O 중계만)
