@@ -7,7 +7,8 @@ struct ContentView: View {
     @ObservedObject var apiServer: APIServer
     @ObservedObject var config = AppConfig.shared
 
-    @State private var showSettings = false
+    @Environment(\.openSettings) private var openSettings
+
     @State private var showNewSession = false
     @State private var newSessionCwd = ""
     @State private var newSessionCliType: CLIType = .claudeCode
@@ -17,7 +18,7 @@ struct ContentView: View {
         HSplitView {
             // ── 사이드바: 세션 목록 ──
             sidebar
-                .frame(minWidth: 200, idealWidth: 220, maxWidth: 300)
+                .frame(minWidth: 220, idealWidth: 250, maxWidth: 300)
 
             // ── 메인: 터미널 ──
             VStack(spacing: 0) {
@@ -26,9 +27,6 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 500)
-        .sheet(isPresented: $showSettings) {
-            SettingsView(config: config, apiServer: apiServer)
-        }
         .sheet(isPresented: $showNewSession) {
             newSessionSheet
         }
@@ -40,8 +38,9 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // 헤더
             HStack {
-                Text("Sessions")
+                Text("세션 목록")
                     .font(.headline)
+                    .foregroundColor(.secondary)
                 Spacer()
                 Button(action: {
                     newSessionCwd = config.defaultCwd
@@ -50,22 +49,26 @@ struct ContentView: View {
                     showNewSession = true
                 }) {
                     Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
                 }
                 .buttonStyle(.plain)
+                .foregroundColor(.accentColor)
                 .help("New Session")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            Divider()
+            .padding(.horizontal, 16)
+            .padding(.top, 20) // 윈도우 컨트롤(신호등 버튼) 공간 확보
+            .padding(.bottom, 12)
 
             // 세션 리스트
             if sessionManager.sessions.isEmpty {
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
-                    Text("No sessions")
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.secondary.opacity(0.5))
+                    Text("열려있는 세션이 없습니다")
                         .foregroundColor(.secondary)
-                        .font(.caption)
+                        .font(.callout)
                     Spacer()
                 }
             } else {
@@ -74,38 +77,51 @@ struct ContentView: View {
                         SessionRow(session: session, onClose: {
                             sessionManager.deleteSession(id: session.id)
                         })
-                            .tag(session.id)
+                        .tag(session.id)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
                     }
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             }
 
-            Divider()
+            Spacer(minLength: 0)
 
-            // 하단 버튼들
-            HStack {
-                Button(action: { showSettings = true }) {
-                    Image(systemName: "gear")
+            // 하단 상태 및 설정
+            HStack(spacing: 12) {
+                Button(action: {
+                    openSettings()
+                }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14))
                 }
                 .buttonStyle(.plain)
+                .foregroundColor(.secondary)
                 .help("Settings")
 
                 Spacer()
 
                 // API 상태 표시
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Circle()
-                        .fill(apiServer.isRunning ? Color.green : Color.red)
+                        .fill(apiServer.serverError != nil ? Color.red : (apiServer.isRunning ? Color.green : Color.gray))
                         .frame(width: 8, height: 8)
+                        .shadow(color: apiServer.serverError != nil ? .red.opacity(0.5) : (apiServer.isRunning ? .green.opacity(0.5) : .clear), radius: 2)
                     Text(verbatim: "API :\(config.apiPort)")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.secondary)
+                        .monospacedDigit()
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(6)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .frame(height: 44)
+            .overlay(Divider(), alignment: .top)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(VisualEffectView(material: .sidebar, blendingMode: .behindWindow))
     }
 
     // MARK: - Terminal Area
@@ -123,63 +139,87 @@ struct ContentView: View {
     // MARK: - Status Bar
 
     private var statusBar: some View {
-        HStack {
+        HStack(spacing: 16) {
             if let session = sessionManager.selectedSession {
                 statusBadge(session.status)
-                Text(session.config.workingDirectory)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .foregroundColor(.secondary)
+                    Text(session.config.workingDirectory)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
 
                 Spacer()
 
-                Text("Messages: \(session.messageCount)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: "message")
+                        .foregroundColor(.secondary)
+                    Text("\(session.messageCount)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
 
-                if session.pendingApproval != nil {
-                    Button("Approve") {
-                        if let approval = session.pendingApproval {
+                if let approval = session.pendingApproval {
+                    HStack(spacing: 8) {
+                        Text("권한 요청됨")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fontWeight(.medium)
+                            
+                        Button(action: {
                             try? session.respondToApproval(id: approval.id, approved: true)
+                        }) {
+                            Text("승인")
+                                .fontWeight(.medium)
                         }
-                    }
-                    .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .controlSize(.small)
 
-                    Button("Deny") {
-                        if let approval = session.pendingApproval {
+                        Button("거절") {
                             try? session.respondToApproval(id: approval.id, approved: false)
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
-                    .controlSize(.small)
+                    .padding(.leading, 8)
+                    .transition(.opacity)
                 }
             } else {
-                Text("No session selected")
+                Text("선택된 세션 없음")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .background(VisualEffectView(material: .headerView, blendingMode: .withinWindow))
+        .overlay(Divider(), alignment: .top)
     }
 
     // MARK: - Helpers
 
     private func statusBadge(_ status: Session.Status) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(statusColor(status))
                 .frame(width: 8, height: 8)
-            Text(status.rawValue)
+                .shadow(color: statusColor(status).opacity(0.3), radius: 2)
+            Text(status.rawValue.capitalized)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .fontWeight(.medium)
+                .foregroundColor(statusColor(status))
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(statusColor(status).opacity(0.1))
-        .cornerRadius(4)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(statusColor(status).opacity(0.15))
+        .cornerRadius(6)
     }
 
     private func statusColor(_ status: Session.Status) -> Color {
@@ -196,48 +236,68 @@ struct ContentView: View {
     // MARK: - New Session Sheet
 
     private var newSessionSheet: some View {
-        VStack(spacing: 16) {
-            Text("New Session")
-                .font(.headline)
-
+        VStack(spacing: 0) {
+            // Sheet Header
             HStack {
-                Text("CLI Tool:")
-                    .frame(width: 120, alignment: .trailing)
-                Picker("", selection: $newSessionCliType) {
-                    ForEach(CLIType.allCases) { type in
-                        Text(type.displayName).tag(type)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 200)
+                Image(systemName: "terminal.badge.plus")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                Text("새 세션")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
             }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
 
-            HStack {
-                Text("Working Directory:")
-                    .frame(width: 120, alignment: .trailing)
-                TextField("Path", text: $newSessionCwd)
-                    .textFieldStyle(.roundedBorder)
-                Button("Browse") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = true
-                    panel.canChooseFiles = false
-                    panel.allowsMultipleSelection = false
-                    if panel.runModal() == .OK, let url = panel.url {
-                        newSessionCwd = url.path
+            Form {
+                Section {
+                    Picker("CLI 도구", selection: $newSessionCliType) {
+                        ForEach(CLIType.allCases) { type in
+                            Text(type.displayName).tag(type)
+                        }
                     }
+                    .pickerStyle(.menu)
+
+                    HStack {
+                        TextField("작업 디렉토리", text: $newSessionCwd)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        Button("찾아보기…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.allowsMultipleSelection = false
+                            if panel.runModal() == .OK, let url = panel.url {
+                                newSessionCwd = url.path
+                            }
+                        }
+                    }
+                    
+                    Toggle(isOn: $newSessionAutoApprove) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("자동 승인")
+                            Text("파일 수정이나 터미널 명령 실행 시 승인을 건너뜁니다.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.top, 8)
                 }
             }
+            .formStyle(.grouped)
+            .scrollDisabled(true)
 
-            Toggle("자동 승인 (파일 생성/명령 실행 시 승인 건너뜀)", isOn: $newSessionAutoApprove)
-
+            // Bottom Actions
             HStack {
                 Spacer()
-                Button("Cancel") {
+                Button("취소") {
                     showNewSession = false
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Create") {
+                Button("생성") {
                     showNewSession = false
                     Task {
                         let sessionConfig = Session.Config(
@@ -249,11 +309,14 @@ struct ContentView: View {
                         _ = try? await sessionManager.createSession(config: sessionConfig)
                     }
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
+            .padding(24)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(Divider(), alignment: .top)
         }
-        .padding(20)
-        .frame(width: 500)
+        .frame(width: 450, height: 380)
     }
 }
 
@@ -266,22 +329,34 @@ struct SessionRow: View {
     @State private var showCloseAlert = false
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     Circle()
                         .fill(statusColor)
                         .frame(width: 8, height: 8)
+                        .shadow(color: statusColor.opacity(0.4), radius: 2)
+                    
                     Text(session.config.cliType.displayName)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.15))
-                        .cornerRadius(3)
+                        .font(.system(.caption, design: .rounded))
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+
                     Text(session.id)
-                        .font(.system(.body, design: .monospaced))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.secondary)
                         .lineLimit(1)
+                        .help("더블 클릭하여 복사")
+                        .onTapGesture(count: 2) {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(session.id, forType: .string)
+                        }
+                    
+                    if session.status == .busy {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
                 }
 
                 Text(session.config.workingDirectory)
@@ -289,6 +364,7 @@ struct SessionRow: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(session.config.workingDirectory)
 
                 // Cloudflare 터널 상태/URL 표시
                 cloudflareStatusView(session: session)
@@ -298,25 +374,28 @@ struct SessionRow: View {
 
             if isHovering {
                 Button(action: { showCloseAlert = true }) {
-                    Image(systemName: "xmark")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .imageScale(.medium)
                 }
                 .buttonStyle(.plain)
                 .help("Close Session")
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle()) // Makes the whole row hoverable
         .onHover { hovering in
-            isHovering = hovering
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovering = hovering
+            }
         }
         .alert("세션 종료", isPresented: $showCloseAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("OK", role: .destructive) {
+            Button("취소", role: .cancel) {}
+            Button("종료", role: .destructive) {
                 onClose()
             }
         } message: {
-            Text("\(session.config.cliType.displayName) 세션을 종료하시겠습니까?\nCLI 프로세스가 함께 종료됩니다.")
+            Text("세션을 종료하시겠습니까?\n이 작업은 실행중인 CLI 프로세스도 함께 종료합니다.")
         }
     }
 
@@ -377,5 +456,25 @@ struct SessionRow: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+// MARK: - Visual Effect Wrapper
+/// A helper view to use NSVisualEffectView in SwiftUI.
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+    
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
     }
 }

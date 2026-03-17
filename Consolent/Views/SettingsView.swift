@@ -10,7 +10,7 @@ private extension NumberFormatter {
     }()
 }
 
-/// 앱 설정 화면
+/// 앱 설정 화면 (MacOS 네이티브 TabView 폼 형태)
 struct SettingsView: View {
 
     @ObservedObject var config: AppConfig
@@ -20,269 +20,300 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showKeyRegenConfirm = false
+    @State private var selectedTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            // 헤더
-            HStack {
-                Text("Settings")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+            // 네이티브 설정 형태처럼 보이게 TabView 사용
+            TabView(selection: $selectedTab) {
+                generalTab
+                    .tabItem {
+                        Label("일반", systemImage: "gearshape")
+                    }
+                    .tag(0)
+
+                apiTab
+                    .tabItem {
+                        Label("서버", systemImage: "network")
+                    }
+                    .tag(1)
+                
+                terminalTab
+                    .tabItem {
+                        Label("터미널", systemImage: "terminal")
+                    }
+                    .tag(2)
             }
             .padding()
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    apiSection
-                    sessionSection
-                    claudeSection
-                    terminalSection
-                }
-                .padding(20)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
             }
+            .padding()
+            .background(VisualEffectView(material: .windowBackground, blendingMode: .withinWindow))
         }
-        .frame(width: 550, height: 600)
+        .frame(width: 550, height: 450)
     }
 
-    // MARK: - API Server
+    // MARK: - General Tab
 
-    private var apiSection: some View {
-        GroupBox("API Server") {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("Enable API Server", isOn: $config.apiEnabled)
-
-                HStack {
-                    Text("Port:")
-                        .frame(width: 100, alignment: .trailing)
-                    TextField("", value: $config.apiPort, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                }
-
-                HStack {
-                    Text("Bind Address:")
-                        .frame(width: 100, alignment: .trailing)
-                    Picker("", selection: $config.apiBind) {
-                        Text("Localhost (127.0.0.1)").tag("127.0.0.1")
-                        Text("All Interfaces (0.0.0.0)").tag("0.0.0.0")
+    private var generalTab: some View {
+        Form {
+            Section("기본 세션 설정") {
+                Picker("기본 CLI 도구", selection: $config.defaultCliType) {
+                    ForEach(CLIType.allCases) { type in
+                        Text(type.displayName).tag(type)
                     }
-                    .labelsHidden()
                 }
+                .pickerStyle(.menu)
+
+                LabeledContent("작업 디렉토리") {
+                    HStack {
+                        TextField("", text: $config.defaultCwd)
+                            .textFieldStyle(.roundedBorder)
+                        Button("찾아보기…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            if panel.runModal() == .OK, let url = panel.url {
+                                config.defaultCwd = url.path
+                            }
+                        }
+                    }
+                }
+
+                TextField("기본 셸", text: $config.defaultShell)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+            Section("리소스 제한") {
+                LabeledContent("최대 동시 세션") {
+                    HStack {
+                        TextField("", value: $config.maxConcurrentSessions, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 100)
+                        Spacer()
+                    }
+                }
+
+                LabeledContent("유휴 시간 제한") {
+                    HStack {
+                        TextField("", value: $config.sessionIdleTimeout, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 100)
+                        Text("초 (0 = 제한 없음)")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Spacer()
+                    }
+                }
+            }
+
+            Section("고급") {
+                TextField("프롬프트 패턴 (정규식)", text: $config.promptPattern)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .help("CLI 입력을 받을 준비가 되었는지 감지하기 위한 정규표현식 (예: > 또는 $)")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - API Server Tab
+
+    private var apiTab: some View {
+        Form {
+            Section("상태") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(apiServer.serverError != nil ? Color.red : (apiServer.isRunning ? Color.green : Color.gray))
+                            .frame(width: 10, height: 10)
+                            .shadow(color: apiServer.serverError != nil ? .red.opacity(0.4) : (apiServer.isRunning ? .green.opacity(0.4) : .clear), radius: 2)
+                        
+                        Text(apiServer.serverError != nil ? "API 서버 에러" : (apiServer.isRunning ? "API 서버 실행중" : "API 서버 중지됨"))
+                            .fontWeight(.medium)
+                            
+                        Spacer()
+                        Toggle("", isOn: $config.apiEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                    
+                    if let error = apiServer.serverError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("네트워크 설정") {
+                HStack {
+                    TextField("포트", value: $config.apiPort, formatter: NumberFormatter.plain)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 100)
+                    Spacer()
+                }
+
+                Picker("바인딩 주소", selection: $config.apiBind) {
+                    Text("로컬호스트 (127.0.0.1)").tag("127.0.0.1")
+                    Text("모든 인터페이스 (0.0.0.0)").tag("0.0.0.0")
+                }
+                .pickerStyle(.menu)
 
                 if config.apiBind == "0.0.0.0" {
-                    Label("Exposing to network. Only do this on trusted networks.", systemImage: "exclamationmark.triangle")
+                    Text("⚠️ 모든 인터페이스에 노출하는 것은 보안 위험이 될 수 있습니다. 신뢰할 수 있는 네트워크에서만 사용하세요.")
                         .font(.caption)
                         .foregroundColor(.orange)
-                }
-
-                HStack {
-                    Text("API Key:")
-                        .frame(width: 100, alignment: .trailing)
-                    Text(config.apiKey)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(4)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .cornerRadius(4)
-
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(config.apiKey, forType: .string)
-                    }
-                    .controlSize(.small)
-
-                    Button("Regenerate") {
-                        showKeyRegenConfirm = true
-                    }
-                    .controlSize(.small)
-                    .alert("Regenerate API Key?", isPresented: $showKeyRegenConfirm) {
-                        Button("Cancel", role: .cancel) {}
-                        Button("Regenerate", role: .destructive) {
-                            config.regenerateKey()
-                        }
-                    } message: {
-                        Text("Existing clients will need the new key.")
-                    }
-                }
-
-                Toggle("Include raw output in responses", isOn: $config.includeRawOutput)
-
-                Divider()
-
-                cloudflareSection
-
-                HStack {
-                    Text("Status:")
-                        .frame(width: 100, alignment: .trailing)
-                    Circle()
-                        .fill(apiServer.isRunning ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(verbatim: apiServer.isRunning ? "Running on :\(config.apiPort)" : "Stopped")
-                        .font(.caption)
+                        .padding(.top, 2)
                 }
             }
-            .padding(8)
+
+            Section("인증 및 출력") {
+                LabeledContent("API 키") {
+                    HStack {
+                        Text(config.apiKey)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color(nsColor: .textBackgroundColor))
+                            .cornerRadius(4)
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.2)))
+
+                        Button(action: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(config.apiKey, forType: .string)
+                        }) {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+                        .help("API 키 복사")
+
+                        Button(action: {
+                            showKeyRegenConfirm = true
+                        }) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.orange)
+                        .help("키 재발급")
+                    }
+                }
+
+                Toggle(isOn: $config.includeRawOutput) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("원시 출력 포함")
+                        Text("API 응답에 일반 텍스트 이외에 ANSI 색상이 포함된 출력을 반환합니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.top, 4)
+            }
+
+            cloudflareSection
+        }
+        .formStyle(.grouped)
+        .alert("API 키를 재발급하시겠습니까?", isPresented: $showKeyRegenConfirm) {
+            Button("취소", role: .cancel) {}
+            Button("재발급", role: .destructive) {
+                config.regenerateKey()
+            }
+        } message: {
+            Text("기존 클라이언트 스크립트는 새로운 키로 업데이트해야 합니다.")
         }
     }
 
-    // MARK: - Sessions
+    // MARK: - Terminal Tab
 
-    private var sessionSection: some View {
-        GroupBox("Sessions") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Max Concurrent:")
-                        .frame(width: 130, alignment: .trailing)
-                    TextField("", value: $config.maxConcurrentSessions, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 60)
-                }
-
-                HStack {
-                    Text("Idle Timeout (sec):")
-                        .frame(width: 130, alignment: .trailing)
-                    TextField("", value: $config.sessionIdleTimeout, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                    Text("0 = no timeout")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text("Buffer per Session:")
-                        .frame(width: 130, alignment: .trailing)
-                    TextField("", value: $config.outputBufferMB, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 60)
-                    Text("MB")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(8)
-        }
-    }
-
-    // MARK: - CLI Tool
-
-    private var claudeSection: some View {
-        GroupBox("CLI Tool") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Default CLI:")
-                        .frame(width: 110, alignment: .trailing)
-                    Picker("", selection: $config.defaultCliType) {
-                        ForEach(CLIType.allCases) { type in
-                            Text(type.displayName).tag(type)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 200)
-                }
-
-                HStack {
-                    Text("Default Shell:")
-                        .frame(width: 110, alignment: .trailing)
-                    TextField("", text: $config.defaultShell)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 200)
-                }
-
-                HStack {
-                    Text("Default CWD:")
-                        .frame(width: 110, alignment: .trailing)
-                    TextField("", text: $config.defaultCwd)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Browse") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = true
-                        panel.canChooseFiles = false
-                        if panel.runModal() == .OK, let url = panel.url {
-                            config.defaultCwd = url.path
-                        }
-                    }
-                    .controlSize(.small)
-                }
-
-                HStack {
-                    Text("Prompt Pattern:")
-                        .frame(width: 110, alignment: .trailing)
-                    TextField("Regex", text: $config.promptPattern)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 200)
-                }
-            }
-            .padding(8)
-        }
-    }
-
-    // MARK: - Terminal
-
-    private var terminalSection: some View {
-        GroupBox("Terminal") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("글꼴:")
-                        .frame(width: 120, alignment: .trailing)
+    private var terminalTab: some View {
+        Form {
+            Section("모양") {
+                LabeledContent("글꼴 패밀리") {
                     TextField("", text: $config.fontFamily)
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 150)
-                    TextField("", value: $config.fontSize, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 50)
-                    Text("pt")
-                        .font(.caption)
+                        .frame(maxWidth: 180)
                 }
 
-                HStack {
-                    Text("테마:")
-                        .frame(width: 120, alignment: .trailing)
-                    Picker("", selection: $config.theme) {
-                        Text("Dark").tag("dark")
-                        Text("Light").tag("light")
+                LabeledContent("글꼴 크기") {
+                    HStack {
+                        TextField("", value: $config.fontSize, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 60)
+                        Text("pt")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Spacer()
                     }
-                    .labelsHidden()
-                    .frame(width: 120)
                 }
 
-                HStack {
-                    Text("화면 스크롤 기록:")
-                        .frame(width: 120, alignment: .trailing)
-                    TextField("", value: $config.scrollbackLines, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                    Text("줄")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                Picker("테마", selection: $config.theme) {
+                    Text("다크").tag("dark")
+                    Text("라이트").tag("light")
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 200)
+            }
+
+            Section("버퍼 제한") {
+                LabeledContent("UI 스크롤백") {
+                    HStack {
+                        TextField("", value: $config.scrollbackLines, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 100)
+                        Text("줄")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Spacer()
+                    }
                 }
 
-                HStack {
-                    Text("API 응답 버퍼:")
-                        .frame(width: 120, alignment: .trailing)
-                    TextField("", value: $config.headlessTerminalRows, formatter: NumberFormatter.plain)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                    Text("줄")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                LabeledContent("API 응답 버퍼") {
+                    HStack {
+                        TextField("", value: $config.headlessTerminalRows, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 100)
+                        Text("줄")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Spacer()
+                    }
                 }
+                Text("API 출력 파싱을 위해 보존되는 원시 기록의 양입니다.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
                 if config.headlessTerminalRows > config.scrollbackLines {
-                    Label("스크롤 기록이 API 응답 버퍼보다 작으면 화면에서 전체 응답을 볼 수 없습니다",
-                          systemImage: "exclamationmark.triangle")
+                    Text("⚠️ 주의: 스크롤백이 API 버퍼보다 작습니다. UI에서 일부 응답이 잘릴 수 있습니다.")
                         .font(.caption)
                         .foregroundColor(.orange)
+                        .padding(.top, 4)
+                    }
+                
+                LabeledContent("메모리 제한") {
+                    HStack {
+                        TextField("", value: $config.outputBufferMB, formatter: NumberFormatter.plain)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 100)
+                        Text("MB (세션당)")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                        Spacer()
+                    }
                 }
             }
-            .padding(8)
         }
+        .formStyle(.grouped)
     }
 
     // MARK: - Cloudflare Tunnel (세션별)
@@ -293,29 +324,22 @@ struct SettingsView: View {
             .filter { $0.status != .terminated }
             .sorted { $0.createdAt < $1.createdAt }
 
-        if activeSessions.isEmpty {
-            Text("Cloudflare Quick Tunnel")
-                .font(.caption)
-                .fontWeight(.medium)
-            Label("활성 세션이 없습니다. 세션을 먼저 생성하세요.",
-                  systemImage: "info.circle")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            Text("Cloudflare Quick Tunnel")
-                .font(.caption)
-                .fontWeight(.medium)
-            Label("세션별로 터널을 켜고 끌 수 있습니다. cloudflared 미설치 시 자동 설치됩니다.",
-                  systemImage: "info.circle")
-                .font(.caption)
-                .foregroundColor(.secondary)
+        Section("Cloudflare Quick Tunnel") {
+            if activeSessions.isEmpty {
+                Label("활성 세션이 없습니다. 세션을 먼저 생성하세요.",
+                      systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Label("세션별로 터널을 켜고 끌 수 있습니다. cloudflared 미설치 시 자동 설치됩니다.",
+                      systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
-            VStack(alignment: .leading, spacing: 8) {
                 ForEach(activeSessions) { session in
                     tunnelRow(session: session)
                 }
             }
-            .padding(.top, 4)
         }
     }
 

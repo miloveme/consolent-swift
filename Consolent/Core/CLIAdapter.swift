@@ -19,6 +19,11 @@ protocol CLIAdapter {
     /// 바이너리 기본 이름 (PATH에서 검색용, 예: "claude")
     var defaultBinaryName: String { get }
 
+    /// 바이너리 경로를 찾는다.
+    /// 기본 구현은 하드코딩 경로 → login shell which → 이름 폴백.
+    /// nvm 등 특수 경로가 필요한 어댑터는 오버라이드한다.
+    func findBinaryPath() -> String
+
     /// 실행 명령을 구성한다.
     func buildCommand(binaryPath: String, args: [String], autoApprove: Bool) -> String
 
@@ -88,7 +93,8 @@ extension CLIAdapter {
         let pipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-l", "-c", "which \(binary)"]
+        // -li: login + interactive. .zshrc의 PATH 설정(nvm 등)을 포함하여 탐색.
+        process.arguments = ["-li", "-c", "which \(binary)"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
