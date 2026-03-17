@@ -615,6 +615,46 @@ open build/Consolent.dmg
 
 ---
 
+## 트러블슈팅
+
+### `command not found: compdef`
+
+세션 시작 시 다음 에러가 표시되는 경우:
+
+```
+/Users/xxx/.some-tool/completions/tool.zsh:123: command not found: compdef
+```
+
+**원인**: Consolent은 셸을 `-li` (login + interactive) 모드로 실행하여 `~/.zshrc`를 소스합니다. `~/.zshrc`에 zsh completion 스크립트가 있는데 `compinit`이 먼저 호출되지 않으면 이 에러가 발생합니다.
+
+**해결**: `~/.zshrc` 상단에 다음을 추가:
+
+```zsh
+autoload -Uz compinit && compinit
+```
+
+> 이 에러는 기능에 영향을 주지 않는 경고 메시지입니다. 무시해도 세션 동작에는 문제없습니다.
+
+### CLI 인증 에러 (`API Error: 401`)
+
+세션에서 메시지 전송 시 빈 응답이 반환되고, Consolent 터미널에 `API Error: 401 ... Please run /login`이 표시되는 경우:
+
+**원인**: CLI 도구(Claude Code 등)의 API 인증 토큰이 만료되었습니다.
+
+**해결**: 터미널에서 CLI 도구 인증을 갱신:
+
+```bash
+# Claude Code
+claude login
+
+# Gemini CLI
+gemini auth
+```
+
+인증 완료 후 Consolent에서 세션을 새로 생성하면 정상 동작합니다.
+
+---
+
 ## 제약 사항
 
 - macOS 전용 (PTY + 네이티브 앱)
