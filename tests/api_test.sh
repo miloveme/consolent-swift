@@ -28,6 +28,7 @@ PASS=0
 FAIL=0
 SKIP=0
 SESSION_ID=""
+GEMINI_SESSION_ID=""
 
 # ── Helpers ──
 pass() {
@@ -159,6 +160,15 @@ if [ "$HTTP_CODE" = "200" ]; then
             CLI_TYPE=$(echo "$HTTP_BODY" | jq -r '.sessions[0].cli_type // "unknown"')
         fi
         echo "       First session: $SESSION_ID (status: $session_status, cli: $CLI_TYPE)"
+
+        # Gemini 세션 찾기 (마크다운 불릿 테스트용)
+        GEMINI_SESSION_ID=$(echo "$HTTP_BODY" | jq -r '[.sessions[] | select(.cli_type == "gemini")] | .[0].id // empty')
+        if [ -n "$GEMINI_SESSION_ID" ] && [ "$GEMINI_SESSION_ID" != "null" ]; then
+            gemini_status=$(echo "$HTTP_BODY" | jq -r "[.sessions[] | select(.id == \"$GEMINI_SESSION_ID\")] | .[0].status // empty")
+            echo "       Gemini session: $GEMINI_SESSION_ID (status: $gemini_status)"
+        else
+            GEMINI_SESSION_ID=""
+        fi
 
         # Wait for session to become ready (max 60 seconds)
         if [ "$session_status" != "ready" ]; then
@@ -606,7 +616,99 @@ else
     skip "Cloudflare tunnel (no session available)"
 fi
 
-# ── 15. Empty Message Validation ──
+# ── 15. Gemini Markdown Bullet Response ──
+section "Gemini — Markdown Bullet Response"
+
+if [ -n "$GEMINI_SESSION_ID" ]; then
+    # Gemini 세션이 ready 상태인지 확인
+    response=$(api_get "/sessions/$GEMINI_SESSION_ID")
+    parse_response "$response"
+    gemini_ready=$(echo "$HTTP_BODY" | jq -r '.status // empty')
+
+    if [ "$gemini_ready" != "ready" ]; then
+        echo -e "       ${YELLOW}Waiting for Gemini session to become ready...${NC}"
+        for i in $(seq 1 30); do
+            sleep 2
+            response=$(api_get "/sessions/$GEMINI_SESSION_ID")
+            parse_response "$response"
+            gemini_ready=$(echo "$HTTP_BODY" | jq -r '.status // empty')
+            if [ "$gemini_ready" = "ready" ]; then
+                echo -e "       ${GREEN}Gemini session ready after $((i * 2))s${NC}"
+                break
+            fi
+            printf "       Waiting... (%ds, status: %s)\n" "$((i * 2))" "$gemini_ready"
+        done
+    fi
+
+    if [ "$gemini_ready" = "ready" ]; then
+        # 마크다운 불릿이 포함된 응답을 유도하는 프롬프트
+        response=$(api_post "/sessions/$GEMINI_SESSION_ID/message" '{"text":"Python 웹 프레임워크 5개를 비교해줘. 각각 한 줄로 설명해줘.","timeout":120}')
+        parse_response "$response"
+
+        if [ "$HTTP_CODE" = "200" ]; then
+            GEMINI_RESULT=$(echo "$HTTP_BODY" | jq -r '.response.result // empty')
+
+            if [ -n "$GEMINI_RESULT" ]; then
+                pass "Markdown bullet response is NOT empty (${#GEMINI_RESULT} chars)"
+                echo "       Preview: $(echo "$GEMINI_RESULT" | head -c 120)..."
+
+                # 프레임워크 관련 키워드 확인
+                if echo "$GEMINI_RESULT" | grep -qi "django\|flask\|fastapi\|tornado\|bottle\|pyramid\|sanic\|starlette\|falcon\|framework\|프레임워크"; then
+                    pass "Response contains framework-related keywords"
+                else
+                    fail "Response doesn't mention any Python framework" "$(echo "$GEMINI_RESULT" | head -c 200)"
+                fi
+            else
+                fail "Markdown bullet response is EMPTY (bug reproduced!)"
+                echo "       Full body: $(echo "$HTTP_BODY" | head -c 300)"
+            fi
+        else
+            fail "Gemini message expected 200, got $HTTP_CODE" "$HTTP_BODY"
+        fi
+    else
+        skip "Gemini session not ready (status: $gemini_ready)"
+    fi
+else
+    skip "Gemini markdown bullet test (no Gemini session available)"
+fi
+
+# ── 16. Gemini Multi-turn Last Response Only ──
+section "Gemini — Multi-turn Last Response Only"
+
+if [ -n "$GEMINI_SESSION_ID" ] && [ -n "$GEMINI_RESULT" ]; then
+    # 두 번째 메시지: 다른 주제로 전환
+    response=$(api_post "/sessions/$GEMINI_SESSION_ID/message" '{"text":"위에서 언급한 프레임워크 중 가장 인기 있는 것 하나만 이름만 알려줘.","timeout":60}')
+    parse_response "$response"
+
+    if [ "$HTTP_CODE" = "200" ]; then
+        gemini_result2=$(echo "$HTTP_BODY" | jq -r '.response.result // empty')
+
+        if [ -n "$gemini_result2" ]; then
+            pass "Multi-turn second response is NOT empty (${#gemini_result2} chars)"
+            echo "       Result: $(echo "$gemini_result2" | head -c 120)"
+
+            # 첫 번째 응답의 처음 80자가 두 번째에 포함되면 → 응답 누적 버그
+            first_snippet=$(echo "$GEMINI_RESULT" | head -c 80)
+            if echo "$gemini_result2" | grep -qF "$first_snippet"; then
+                fail "Second response contains first response (accumulation bug)"
+            else
+                pass "Second response does NOT contain first response (multi-turn isolation OK)"
+            fi
+        else
+            fail "Multi-turn second response is EMPTY"
+        fi
+    else
+        fail "Gemini second message expected 200, got $HTTP_CODE" "$HTTP_BODY"
+    fi
+else
+    if [ -z "$GEMINI_SESSION_ID" ]; then
+        skip "Gemini multi-turn test (no Gemini session available)"
+    else
+        skip "Gemini multi-turn test (first message failed)"
+    fi
+fi
+
+# ── 17. Empty Message Validation ──
 section "Input Validation"
 
 response=$(api_post "/v1/chat/completions" '{
