@@ -342,4 +342,59 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertFalse(result.contains("shortcuts"))
         XCTAssertFalse(result.contains("bypass"))
     }
+
+    // MARK: - detectError Tests
+
+    func testDetectError_authenticationError() {
+        // 401 인증 에러 감지
+        let screen = """
+        ? for shortcuts
+        ❯ hello
+        API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}} · Please run /login
+        ? for shortcuts
+        """
+        let error = adapter.detectError(screen)
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error!.contains("API Error"))
+        XCTAssertTrue(error!.contains("401"))
+    }
+
+    func testDetectError_noError() {
+        // 정상 응답에서는 nil 반환
+        let screen = """
+        ? for shortcuts
+        ❯ hello
+        ⏺ 안녕하세요! 무엇을 도와드릴까요?
+        ? for shortcuts
+        """
+        XCTAssertNil(adapter.detectError(screen))
+    }
+
+    func testDetectError_rateLimitError() {
+        // 429 rate limit 에러도 감지
+        let screen = """
+        ❯ test
+        API Error: 429 rate limit exceeded
+        """
+        let error = adapter.detectError(screen)
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error!.contains("429"))
+    }
+
+    func testCleanResponse_apiErrorFilteredButDetectable() {
+        // cleanResponse는 "api error"를 TUI chrome으로 필터 → 빈 응답
+        // 하지만 detectError로 에러 메시지를 복구할 수 있음
+        let screen = """
+        ? for shortcuts
+        ❯ hello
+        API Error: 401 {"type":"error","message":"Invalid credentials"} · Please run /login
+        ? for shortcuts
+        """
+        let cleanResult = adapter.cleanResponse(screen)
+        XCTAssertTrue(cleanResult.isEmpty, "cleanResponse는 API Error를 TUI chrome으로 필터하여 빈 응답")
+
+        let errorMsg = adapter.detectError(screen)
+        XCTAssertNotNil(errorMsg, "detectError로 에러 메시지 복구 가능")
+        XCTAssertTrue(errorMsg!.contains("API Error"))
+    }
 }

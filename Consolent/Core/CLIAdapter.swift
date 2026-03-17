@@ -53,6 +53,14 @@ protocol CLIAdapter {
     /// TUI chrome, 프롬프트, 상태 표시 등을 제거하고 깨끗한 텍스트를 반환.
     func cleanResponse(_ screenText: String) -> String
 
+    // MARK: - Error Detection
+
+    /// 화면 텍스트에서 CLI 에러를 감지한다.
+    /// TUI chrome 필터가 에러 메시지를 제거하여 빈 응답이 되는 경우,
+    /// 이 메서드로 에러를 복구하여 사용자에게 전달한다.
+    /// 에러가 없으면 nil 반환.
+    func detectError(_ screenText: String) -> String?
+
     // MARK: - Output Parsing Patterns
 
     /// 승인 프롬프트 패턴 (regex). 이 패턴이 출력에서 감지되면 승인 요청으로 처리.
@@ -115,6 +123,9 @@ extension CLIAdapter {
 
         return nil
     }
+
+    /// 기본 에러 감지: nil (에러 감지 없음). 각 어댑터가 오버라이드.
+    func detectError(_ screenText: String) -> String? { nil }
 
     /// 기본 승인 패턴 (대부분의 CLI에서 공통)
     var approvalPatterns: [String] {
