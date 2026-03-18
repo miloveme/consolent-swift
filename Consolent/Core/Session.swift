@@ -85,7 +85,10 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.config = config
         self.adapter = config.cliType.createAdapter()
         self.createdAt = Date()
-        self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows))
+        // scrollback 버퍼를 충분히 확보하여 긴 응답이 잘리지 않도록 한다.
+        // 기본 500행 visible + 10000행 scrollback = 최대 10500행 보존.
+        // readHeadlessBuffer()에서 getScrollInvariantLine()으로 전체를 읽는다.
+        self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows, scrollback: 10000))
         setupCallbacks()
 
         // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용)
@@ -411,13 +414,15 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         parser.idleTimeout = 1.0
     }
 
-    /// Headless 터미널 버퍼에서 현재 화면 텍스트를 읽는다.
+    /// Headless 터미널 버퍼에서 전체 텍스트를 읽는다 (scrollback 포함).
+    /// getScrollInvariantLine()을 사용하여 visible 영역 밖으로 스크롤된 내용도 포함한다.
+    /// 이렇게 해야 500행을 초과하는 긴 응답도 완전히 읽을 수 있다.
     func readHeadlessBuffer() -> String {
         var lines: [String] = []
-        for row in 0..<headlessTerminal.rows {
-            if let line = headlessTerminal.getLine(row: row) {
-                lines.append(line.translateToString(trimRight: true))
-            }
+        var row = 0
+        while let line = headlessTerminal.getScrollInvariantLine(row: row) {
+            lines.append(line.translateToString(trimRight: true))
+            row += 1
         }
         return lines.joined(separator: "\n")
     }
