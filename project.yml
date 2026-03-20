@@ -23,7 +23,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.consolent.app
-        MARKETING_VERSION: "0.1.5"
+        MARKETING_VERSION: "0.1.6"
         CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: Consolent/Info.plist
         CODE_SIGN_ENTITLEMENTS: Consolent/Consolent.entitlements

@@ -117,6 +117,39 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0].message.content);
 ```
 
+**Python (스트리밍):**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:9999/v1",
+    api_key="cst_YOUR_API_KEY"
+)
+
+stream = client.chat.completions.create(
+    model="claude-code",
+    messages=[{"role": "user", "content": "이 프로젝트의 구조를 설명해줘"}],
+    stream=True
+)
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+**curl (스트리밍):**
+
+```bash
+curl -sN http://localhost:9999/v1/chat/completions \
+  -H "Authorization: Bearer cst_YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-code",
+    "messages": [{"role": "user", "content": "이 프로젝트의 구조를 설명해줘"}],
+    "stream": true
+  }'
+```
+
 ### 모델 목록
 
 ```bash
@@ -207,7 +240,7 @@ data: {"id":"chatcmpl-m_x1y2z3","object":"chat.completion.chunk","created":17104
 data: [DONE]
 ```
 
-> 현재 응답 전체를 수신한 후 청크로 분할 전송합니다. 실시간 토큰 단위 스트리밍은 아닙니다.
+> 200ms 간격으로 헤드리스 터미널 버퍼를 폴링하여 새 콘텐츠를 delta로 전송합니다. CLI 응답이 생성되는 동안 실시간으로 스트리밍됩니다.
 
 **에러:**
 
@@ -374,7 +407,7 @@ API_KEY="cst_YOUR_API_KEY" ./tests/api_test.sh
 API_KEY="cst_xxx" BASE_URL="http://127.0.0.1:9999" ./tests/api_test.sh
 ```
 
-테스트 항목: 인증, 세션 CRUD, 메시지 전송, 출력 버퍼, 승인, OpenAI 호환 API, 응답 누적 방지, HTML 생성, 코드 설명, 멀티턴 컨텍스트 유지
+테스트 항목: 인증, 세션 CRUD, 메시지 전송, 출력 버퍼, 승인, OpenAI 호환 API, SSE 스트리밍, 응답 누적 방지, HTML 생성, 코드 설명, 멀티턴 컨텍스트 유지
 
 ---
 
@@ -661,7 +694,7 @@ gemini auth
 - CLI 도구가 로컬에 설치/로그인 필요
 - CLI [TUI](#term-tui) 변경 시 [Adapter](#term-adapter) 업데이트 필요
 - App Store 불가 (샌드박스 제약) — DMG 직접 배포 (`scripts/build-dmg.sh`)
-- OpenAI API `stream: true`는 SSE 형식으로 지원하나, 응답 수신 후 일괄 전송 (실시간 토큰 스트리밍 아님)
+- OpenAI API `stream: true`는 SSE 형식으로 지원 (200ms 폴링 기반 실시간 delta 전송)
 
 ---
 
