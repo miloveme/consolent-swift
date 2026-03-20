@@ -117,7 +117,7 @@ final class APIServer: ObservableObject {
 
             let config = Session.Config(
                 name: body.name,
-                workingDirectory: body.workingDirectory ?? AppConfig.shared.defaultCwd,
+                workingDirectory: body.workingDirectory ?? AppConfig.shared.cwd(for: cliType),
                 shell: body.shell ?? AppConfig.shared.defaultShell,
                 cliType: cliType,
                 cliArgs: body.cliArgs ?? body.claudeArgs ?? [],

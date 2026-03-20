@@ -48,11 +48,15 @@ final class SessionManager: ObservableObject {
 
         let session = Session(config: finalConfig)
 
-        // 상태 변화 관찰
+        // 세션 상태 변화를 SessionManager의 objectWillChange로 전파.
+        // DispatchQueue.main.async로 지연하여 SwiftUI 뷰 업데이트 중
+        // "Publishing changes from within view updates" 경고를 방지한다.
         session.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.objectWillChange.send()
+                DispatchQueue.main.async {
+                    self?.objectWillChange.send()
+                }
             }
             .store(in: &cancellables)
 

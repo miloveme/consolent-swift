@@ -38,20 +38,31 @@ struct TerminalViewWrapper: NSViewRepresentable {
         context.coordinator.session = session
         terminalView.terminalDelegate = context.coordinator
 
-        // 세션의 터미널 출력을 TerminalView에 연결
+        // 세션의 터미널 출력을 TerminalView에 연결 + 기존 버퍼 피드.
+        // DispatchQueue.main.async로 지연하여 뷰 업데이트 사이클 밖에서 실행한다.
+        // (SwiftUI "Publishing changes from within view updates" 경고 방지)
         let existingCallback = session.onTerminalOutput
-        session.onTerminalOutput = { [weak terminalView] data in
-            existingCallback?(data)
-            DispatchQueue.main.async {
-                let bytes = [UInt8](data)
-                terminalView?.feed(byteArray: ArraySlice(bytes))
+        let bufferData = session.outputBuffer
+        let sessionRef = session
+        let coordinator = context.coordinator
+        DispatchQueue.main.async {
+            sessionRef.onTerminalOutput = { [weak terminalView] data in
+                existingCallback?(data)
+                DispatchQueue.main.async {
+                    let bytes = [UInt8](data)
+                    terminalView?.feed(byteArray: ArraySlice(bytes))
+                }
             }
-        }
 
-        // 이미 있는 출력 버퍼 표시
-        if !session.outputBuffer.isEmpty {
-            let bytes = [UInt8](session.outputBuffer)
-            terminalView.feed(byteArray: ArraySlice(bytes))
+            // 이미 있는 출력 버퍼 표시.
+            // 피드 중에는 PTY 전송을 차단하여 DA 응답이 CLI 입력에 섞이지 않도록 한다.
+            if !bufferData.isEmpty {
+                coordinator.suppressSendToPTY = true
+                let bytes = [UInt8](bufferData)
+                terminalView.feed(byteArray: ArraySlice(bytes))
+                terminalView.setNeedsDisplay(terminalView.bounds)
+                coordinator.suppressSendToPTY = false
+            }
         }
 
         return terminalView
@@ -60,6 +71,14 @@ struct TerminalViewWrapper: NSViewRepresentable {
     func updateNSView(_ nsView: SwiftTerm.TerminalView, context: Context) {
         // 세션 변경 시 업데이트
         context.coordinator.session = session
+
+        // 레이아웃 완료 후 터미널 강제 리드로우.
+        // makeNSView 시점에는 frame이 .zero일 수 있어서
+        // outputBuffer 피드 후에도 화면이 비어 보이는 문제를 해결한다.
+        // (특히 Codex TUI에서 세션 전환 시 발생)
+        DispatchQueue.main.async {
+            nsView.setNeedsDisplay(nsView.bounds)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -72,9 +91,15 @@ struct TerminalViewWrapper: NSViewRepresentable {
         weak var terminalView: SwiftTerm.TerminalView?
         var session: Session?
 
+        /// 버퍼 피드 중 PTY 전송 차단 플래그.
+        /// 기존 outputBuffer를 TerminalView에 재피드할 때 터미널이 DA(Device Attributes) 등
+        /// 제어 응답을 생성하여 PTY로 보내는 것을 방지한다.
+        /// Gemini CLI는 이 응답을 입력 텍스트로 표시하는 문제가 있음.
+        var suppressSendToPTY = false
+
         // 키보드 입력이 발생하면 우리의 PTY에 전달
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            guard let session else { return }
+            guard !suppressSendToPTY, let session else { return }
             let dataObj = Data(data)
             try? session.ptyProcess.write(dataObj)
         }

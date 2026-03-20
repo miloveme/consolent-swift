@@ -114,10 +114,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows, scrollback: 10000))
         setupCallbacks()
 
-        // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용)
+        // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용).
+        // async로 지연하여 SwiftUI 뷰 업데이트 사이클과 충돌 방지.
         cloudflare.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.objectWillChange.send() }
+            }
             .store(in: &cancellables)
     }
 

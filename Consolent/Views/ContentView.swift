@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var newSessionName = ""
     @State private var newSessionCwd = ""
     @State private var newSessionCliType: CLIType = .claudeCode
-    @State private var newSessionAutoApprove = false
+    @State private var newSessionAutoApprove = true
 
     /// 현재 이름이 CLI 기본값(claude-code, gemini, codex)이면 false → 타입 변경 시 자동 업데이트
     private var isSessionNameCustomized: Bool {
@@ -37,6 +37,13 @@ struct ContentView: View {
         .frame(minWidth: 800, minHeight: 500)
         .sheet(isPresented: $showNewSession) {
             newSessionSheet
+                .onAppear {
+                    // 시트가 표시된 후 초기값 설정 (SwiftUI Picker 타이밍 이슈 방지)
+                    newSessionCliType = config.defaultCliType
+                    newSessionName = config.defaultCliType.rawValue
+                    newSessionCwd = config.cwd(for: config.defaultCliType)
+                    newSessionAutoApprove = true
+                }
         }
     }
 
@@ -51,10 +58,6 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button(action: {
-                    newSessionCliType = config.defaultCliType
-                    newSessionName = config.defaultCliType.rawValue
-                    newSessionCwd = config.defaultCwd
-                    newSessionAutoApprove = false
                     showNewSession = true
                 }) {
                     Image(systemName: "plus")
@@ -248,7 +251,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             // Sheet Header
             HStack {
-                Image(systemName: "terminal.badge.plus")
+                Image(systemName: "terminal")
                     .font(.title2)
                     .foregroundColor(.accentColor)
                 Text("새 세션")
@@ -273,6 +276,8 @@ struct ContentView: View {
                         if !isSessionNameCustomized {
                             newSessionName = newType.rawValue
                         }
+                        // 작업 디렉토리도 CLI 타입별 설정으로 변경
+                        newSessionCwd = config.cwd(for: newType)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
