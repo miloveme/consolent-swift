@@ -91,11 +91,14 @@ final class GeminiAdapterTests: XCTestCase {
     }
 
     func testCleanResponse_lastTurnOnly() {
-        // ✦ 마커에서 responseLines를 클리어하므로 항상 마지막 턴만 반환
+        // 멀티턴: ▀▀▀/▄▄▄ 블록바가 턴 경계를 표시 → phase 0 리셋 → 마지막 턴만 반환.
+        // 실제 Gemini CLI는 항상 블록바로 턴을 구분하므로 블록바 포함 테스트가 현실적.
         let screen = """
         > first question
         ✦ first answer
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
         > second question
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
         ✦ second answer
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
@@ -114,6 +117,47 @@ final class GeminiAdapterTests: XCTestCase {
         ✦ second answer
         """
         XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
+    }
+
+    func testCleanResponse_multiSectionWithToolUse() {
+        // Gemini가 tool use 전후로 여러 ✦ 섹션을 생성하는 경우:
+        // 같은 턴 내에서는 ✦ 섹션이 누적되어야 한다 (스트리밍 delta 소실 방지).
+        let screen = """
+        > 실행해줘
+        ✦ I will open the game in your default web browser using the open command.
+        ✓ Shell open donkey_kong/index.html
+        ✦ 게임을 브라우저에서 실행했습니다. 이제 방향키와 스페이스바를 사용하여 게임을 즐기실 수 있습니다.
+          - 방향키(Left/Right): 좌우 이동
+          - 스페이스바: 점프
+        """
+        let result = adapter.cleanResponse(screen)
+        // 첫 번째 ✦ 섹션 포함
+        XCTAssertTrue(result.contains("I will open the game"), "첫 번째 ✦ 섹션이 포함되어야 함")
+        // 두 번째 ✦ 섹션 포함
+        XCTAssertTrue(result.contains("게임을 브라우저에서 실행했습니다"), "두 번째 ✦ 섹션이 포함되어야 함")
+        // 상세 내용 포함
+        XCTAssertTrue(result.contains("방향키(Left/Right): 좌우 이동"))
+        // tool status는 필터됨
+        XCTAssertFalse(result.contains("✓ Shell"))
+    }
+
+    func testCleanResponse_multiSectionNewTurnResets() {
+        // 새 턴에서는 이전 응답이 리셋되어야 함
+        let screen = """
+        > first question
+        ✦ first answer section 1
+        ✓ Shell ls
+        ✦ first answer section 2
+        ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+        > second question
+        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+        ✦ second answer only
+        """
+        let result = adapter.cleanResponse(screen)
+        // 이전 턴의 응답은 제거됨
+        XCTAssertFalse(result.contains("first answer"), "이전 턴 응답이 남으면 안 됨")
+        // 현재 턴의 응답만 반환
+        XCTAssertEqual(result, "second answer only")
     }
 
     func testCleanResponse_preservesMultilineResponse() {

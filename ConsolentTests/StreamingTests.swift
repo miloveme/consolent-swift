@@ -209,6 +209,34 @@ final class StreamingTests: XCTestCase {
         XCTAssertEqual(result, "")
     }
 
+    // MARK: - GeminiAdapter Spacing Fix Tests
+
+    func testGeminiCleanResponse_preservesSpaces() {
+        let adapter = GeminiAdapter()
+        // Null 문자가 공백으로 치환되어 단어 사이 띄어쓰기가 보존되는지 확인
+        let screen = "✦ Hello\u{0000}world\u{0000}this\u{0000}is\u{0000}a\u{0000}test"
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("Hello"), "응답에 Hello 포함되어야 함")
+        XCTAssertTrue(result.contains(" "), "단어 사이에 공백이 있어야 함")
+        XCTAssertFalse(result.contains("\u{0000}"), "null 문자가 남아있으면 안 됨")
+    }
+
+    func testGeminiCleanResponse_basicResponse() {
+        let adapter = GeminiAdapter()
+        let screen = "> user message\n✦ Here is the response.\nSecond line."
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("Here is the response."))
+        XCTAssertTrue(result.contains("Second line."))
+    }
+
+    func testGeminiCleanResponse_filtersTUIChrome() {
+        let adapter = GeminiAdapter()
+        let screen = "✦ Response text\nesc to cancel\nMore response"
+        let result = adapter.cleanResponse(screen)
+        XCTAssertTrue(result.contains("Response text"))
+        XCTAssertFalse(result.contains("esc to cancel"))
+    }
+
     // MARK: - StreamEvent Enum Tests
 
     func testStreamEvent_delta() {

@@ -299,7 +299,7 @@ final class APIServer: ObservableObject {
         router.post("v1", "chat", "completions") { [self] req -> Response in
             print("[API] /v1/chat/completions 요청 수신")
             let body = try req.content.decode(OpenAIChatRequest.self)
-            print("[API] stream=\(body.stream ?? false), model=\(body.model), messages=\(body.messages.count)개")
+            print("[API] stream=\(body.stream ?? false), model=\(body.model ?? "default"), messages=\(body.messages.count)개")
 
             // 마지막 user 메시지 추출
             guard let lastUserMsg = body.messages.last(where: { $0.role == "user" }),

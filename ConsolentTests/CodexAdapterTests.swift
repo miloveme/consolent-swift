@@ -406,6 +406,33 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertEqual(adapter.cleanResponse(screen), "second answer")
     }
 
+    func testCleanResponse_noRestoreDuringProcessing() {
+        // 새 메시지 처리 중(• Working...) 이면 이전 응답을 복원하지 않아야 한다.
+        // 이 버그: 연속 요청 시 이전 응답이 그대로 다시 반환되던 문제.
+        let screen = """
+        › first question
+        • first answer is long text
+        › second question
+        • Working (0s · esc to interrupt)
+        › Find and fix a bug in @filename
+        """
+        // 새 처리가 시작됐으므로 (• Working... → phase 2) 이전 응답을 복원하면 안 됨
+        XCTAssertEqual(adapter.cleanResponse(screen), "")
+    }
+
+    func testCleanResponse_noRestoreDuringToolExecution() {
+        // 도구 실행 중에도 이전 응답을 복원하지 않아야 한다.
+        let screen = """
+        › hello
+        • Hi there
+        › list files
+        • Running `ls -la`
+        › Describe a bug or paste a URL
+        """
+        // • Running... → isToolLine → phase 2 → 복원 안 함
+        XCTAssertEqual(adapter.cleanResponse(screen), "")
+    }
+
     // MARK: - Approval Patterns
 
     func testApprovalPatterns_notEmpty() {

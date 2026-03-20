@@ -89,6 +89,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private var streamContinuation: AsyncStream<StreamEvent>.Continuation?
     private var streamSentLength: Int = 0
     private var streamPollTimer: DispatchSourceTimer?
+    /// 메시지 전송 시점의 cleanResponse 결과 (이전 턴의 응답).
+    /// 스트리밍 폴링에서 이전 응답이 그대로 반환되는 것을 감지하여 스킵하는 데 사용.
+    private var streamBaselineText: String?
 
     // MARK: - Init
 
@@ -209,6 +212,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         messageStartTime = Date()
         streamContinuation = continuation
         streamSentLength = 0
+
+        // 메시지 전송 전 현재 화면의 cleanResponse 결과를 baseline으로 캡처.
+        // 이전 턴의 응답이 스트리밍 도중 다시 반환되는 것을 방지한다.
+        // (Codex 등에서 backup/restore 로직으로 이전 응답이 복원될 수 있음)
+        let currentScreen = readHeadlessBuffer()
+        streamBaselineText = adapter.cleanResponse(currentScreen)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 파서 모니터링 시작
         parser.completionMode = .contentCheck
@@ -507,6 +517,38 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
         let currentLength = cleanText.count
 
+        // 디버그 로깅: 스트리밍 폴링 상태 (처음 60초간, 5초마다)
+        #if DEBUG
+        if let start = messageStartTime {
+            let elapsed = Date().timeIntervalSince(start)
+            if elapsed < 60, Int(elapsed * 5) % 5 == 0 {
+                let bufferLines = screenText.components(separatedBy: "\n").count
+                let hasClaudeMarker = screenText.contains("⏺")
+                let hasGeminiMarker = screenText.contains("✦")
+                let hasCodexMarker = screenText.contains("•")
+                if cleanText.isEmpty && streamSentLength == 0 {
+                    print("[Stream] poll \(String(format: "%.1f", elapsed))s: buffer=\(bufferLines)행, ⏺=\(hasClaudeMarker), ✦=\(hasGeminiMarker), •=\(hasCodexMarker), clean=\"\" (대기 중)")
+                }
+            }
+        }
+        #endif
+
+        // 이전 턴 응답이 그대로 반환된 경우 스킵 (Codex backup/restore 등).
+        // baseline과 동일하면 아직 새 응답이 시작되지 않은 것.
+        // 다른 내용이 나타나면 baseline을 클리어하여 이후 정상 처리.
+        if let baseline = streamBaselineText, !baseline.isEmpty {
+            let trimmedClean = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedClean == baseline && streamSentLength == 0 {
+                #if DEBUG
+                print("[Stream] baseline 일치 → 이전 턴 응답 스킵")
+                #endif
+                return
+            } else if trimmedClean != baseline {
+                // 내용이 변경됨 → baseline 클리어
+                streamBaselineText = nil
+            }
+        }
+
         // cleanText가 빈 경우 (thinking/tool use 중이거나 TUI 리드로우) → 스킵
         // scrollback 10000행이 있으므로 scroll-off raw 폴백 불필요
         guard currentLength > streamSentLength else { return }
@@ -516,6 +558,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let delta = String(cleanText[startIndex...])
         continuation.yield(.delta(delta))
         streamSentLength = currentLength
+
+        #if DEBUG
+        if let start = messageStartTime {
+            let elapsed = Date().timeIntervalSince(start)
+            print("[Stream] delta \(String(format: "%.1f", elapsed))s: +\(delta.count)자 (total=\(currentLength))")
+        }
+        #endif
     }
 
     /// 스트리밍 응답 완료 핸들러.
@@ -537,18 +586,23 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         // 최종 버퍼 읽기 + 정리
         let rawText = String(data: currentResponseBuffer, encoding: .utf8) ?? ""
         let screenText = readHeadlessBuffer()
-        var cleanText = adapter.cleanResponse(screenText)
+
+        // .done 응답용 전체 텍스트 (필터 미적용 — 최종 응답은 완전해야 함)
+        var fullCleanText = adapter.cleanResponse(screenText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 빈 응답일 때 에러 감지
-        if cleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
-            cleanText = errorMsg
+        if fullCleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
+            fullCleanText = errorMsg
         }
 
-        // 최종 잔여분 전송
-        if cleanText.count > streamSentLength {
-            let startIndex = cleanText.index(cleanText.startIndex, offsetBy: streamSentLength)
-            let remaining = String(cleanText[startIndex...])
+        // 최종 잔여분 전송 — 스트리밍 노이즈 필터 적용 (pollStreamingDelta와 동일 기준)
+        // streamSentLength는 filterStreamingNoise 적용 텍스트 기준이므로
+        // 최종 delta 계산도 동일 필터를 적용해야 offset이 일관된다.
+        let streamFilteredText = Self.filterStreamingNoise(fullCleanText)
+        if streamFilteredText.count > streamSentLength {
+            let startIndex = streamFilteredText.index(streamFilteredText.startIndex, offsetBy: streamSentLength)
+            let remaining = String(streamFilteredText[startIndex...])
             continuation.yield(.delta(remaining))
         }
 
@@ -558,7 +612,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let response = MessageResponse(
             messageId: messageId,
             response: ResponseBody(
-                result: cleanText,
+                result: fullCleanText,
                 raw: AppConfig.shared.includeRawOutput ? rawText : nil,
                 filesChanged: filesChanged,
                 durationMs: duration
@@ -583,6 +637,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     /// 스트리밍 상태를 초기화한다.
     private func resetStreamingState() {
         streamSentLength = 0
+        streamBaselineText = nil
         streamPollTimer?.cancel()
         streamPollTimer = nil
     }

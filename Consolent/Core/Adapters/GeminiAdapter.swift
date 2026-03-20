@@ -57,8 +57,10 @@ struct GeminiAdapter: CLIAdapter {
     // MARK: - Response Parsing
 
     func cleanResponse(_ screenText: String) -> String {
-        // Step 1: Null 문자 제거 (SwiftTerm wide char 패딩)
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
+        // Step 1: Null 문자 → 공백 변환 (SwiftTerm wide char 패딩 + 커서 이동 빈 셀)
+        // \0을 공백으로 치환해야 단어 사이 띄어쓰기가 보존된다.
+        // CJK 패딩 공백은 Step 4의 CJKSpacingFix에서 처리.
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")
@@ -82,9 +84,20 @@ struct GeminiAdapter: CLIAdapter {
             // ── 어시스턴트 응답 시작 (✦ 마커) ──
             // TUI chrome 필터보다 먼저 체크해야 함!
             // 응답 내용에 "gemini cli" 등 TUI chrome 패턴이 포함될 수 있기 때문.
-            // 새 ✦를 만나면 이전 응답을 클리어 → 항상 마지막 턴의 응답만 반환.
+            //
+            // 리셋 조건:
+            //   - phase 0/1 → 새 턴 시작 → responseLines 클리어
+            //   - phase 2   → 같은 턴 내 연속 ✦ (tool use 후 이어지는 응답) → 누적
+            // Gemini는 tool use 전후로 여러 ✦ 섹션을 생성하므로
+            // 같은 턴에서는 클리어하면 스트리밍 시 이전 섹션이 소실된다.
             if trimmed.hasPrefix("✦") {
-                responseLines = []
+                if phase != 2 {
+                    // 새 턴 시작 (phase 0 또는 1에서 전환) → 이전 응답 클리어
+                    responseLines = []
+                } else {
+                    // 같은 턴 내 연속 ✦ (tool use 후 이어지는 응답) → 빈 줄로 구분
+                    responseLines.append("")
+                }
                 phase = 2
 
                 let stripped = trimmed.replacingOccurrences(of: "^✦\\s*", with: "", options: .regularExpression)
