@@ -18,6 +18,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     }
 
     struct Config {
+        /// 세션 이름. OpenAI 호환 API의 model 필드로 사용된다.
+        /// nil이면 cliType.rawValue가 기본값 (예: "claude-code", "gemini", "codex").
+        var name: String? = nil
         var workingDirectory: String
         var shell: String = "/bin/zsh"
         var cliType: CLIType = .claudeCode
@@ -52,6 +55,10 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     let config: Config
     let adapter: CLIAdapter
     let createdAt: Date
+
+    /// 세션 이름. OpenAI 호환 API의 model 필드로 매칭된다.
+    /// 기본값은 cliType.rawValue (예: "claude-code").
+    @Published var name: String
 
     @Published private(set) var status: Status = .initializing
     @Published private(set) var pendingApproval: OutputParser.ApprovalRequest? = nil
@@ -99,6 +106,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.id = id ?? "s_\(UUID().uuidString.prefix(8).lowercased())"
         self.config = config
         self.adapter = config.cliType.createAdapter()
+        self.name = config.name ?? config.cliType.rawValue
         self.createdAt = Date()
         // scrollback 버퍼를 충분히 확보하여 긴 응답이 잘리지 않도록 한다.
         // 기본 500행 visible + 10000행 scrollback = 최대 10500행 보존.
@@ -106,10 +114,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.headlessTerminal = Terminal(delegate: headlessDelegate, options: TerminalOptions(cols: 120, rows: AppConfig.shared.headlessTerminalRows, scrollback: 10000))
         setupCallbacks()
 
-        // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용)
+        // cloudflare 상태 변화를 Session의 objectWillChange로 전달 (뷰 갱신용).
+        // async로 지연하여 SwiftUI 뷰 업데이트 사이클과 충돌 방지.
         cloudflare.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.objectWillChange.send() }
+            }
             .store(in: &cancellables)
     }
 

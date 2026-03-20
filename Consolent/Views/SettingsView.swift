@@ -74,14 +74,17 @@ struct SettingsView: View {
 
                 LabeledContent("작업 디렉토리") {
                     HStack {
-                        TextField("", text: $config.defaultCwd)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("", text: Binding(
+                            get: { config.cwd(for: config.defaultCliType) },
+                            set: { config.setCwd($0, for: config.defaultCliType) }
+                        ))
+                        .textFieldStyle(.roundedBorder)
                         Button("찾아보기…") {
                             let panel = NSOpenPanel()
                             panel.canChooseDirectories = true
                             panel.canChooseFiles = false
                             if panel.runModal() == .OK, let url = panel.url {
-                                config.defaultCwd = url.path
+                                config.setCwd(url.path, for: config.defaultCliType)
                             }
                         }
                     }

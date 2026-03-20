@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 앱 설정. JSON 파일로 영속화.
 final class AppConfig: ObservableObject, Codable {
@@ -23,9 +24,22 @@ final class AppConfig: ObservableObject, Codable {
 
     @Published var defaultCliType: CLIType = .claudeCode
     @Published var claudePath: String = "claude"  // 하위 호환용 유지
-    @Published var defaultCwd: String = NSHomeDirectory()
+    @Published var defaultCwd: String = NSHomeDirectory()  // 하위 호환용 유지
+    /// CLI 도구별 작업 디렉토리. 미설정 시 defaultCwd 사용.
+    @Published var cwdPerCliType: [String: String] = [:]
     @Published var defaultShell: String = "/bin/zsh"
     @Published var promptPattern: String = "^> $"
+
+    /// 지정된 CLI 타입의 작업 디렉토리를 반환한다.
+    /// CLI별 설정이 없으면 defaultCwd를 반환.
+    func cwd(for cliType: CLIType) -> String {
+        cwdPerCliType[cliType.rawValue] ?? defaultCwd
+    }
+
+    /// 지정된 CLI 타입의 작업 디렉토리를 설정한다.
+    func setCwd(_ path: String, for cliType: CLIType) {
+        cwdPerCliType[cliType.rawValue] = path
+    }
 
     // MARK: - Terminal
 
@@ -42,14 +56,18 @@ final class AppConfig: ObservableObject, Codable {
     enum CodingKeys: String, CodingKey {
         case apiEnabled, apiPort, apiBind, apiKey, includeRawOutput
         case maxConcurrentSessions, sessionIdleTimeout, outputBufferMB
-        case defaultCliType, claudePath, defaultCwd, defaultShell, promptPattern
+        case defaultCliType, claudePath, defaultCwd, cwdPerCliType, defaultShell, promptPattern
         case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
     }
+
+    /// 자동 저장 구독. Published 속성 변경 시 JSON 파일에 저장한다.
+    private var autoSaveCancellable: AnyCancellable?
 
     init() {
         if apiKey.isEmpty {
             apiKey = Self.generateKey()
         }
+        setupAutoSave()
     }
 
     required init(from decoder: Decoder) throws {
@@ -65,6 +83,7 @@ final class AppConfig: ObservableObject, Codable {
         defaultCliType = try c.decodeIfPresent(CLIType.self, forKey: .defaultCliType) ?? .claudeCode
         claudePath = try c.decodeIfPresent(String.self, forKey: .claudePath) ?? "claude"
         defaultCwd = try c.decodeIfPresent(String.self, forKey: .defaultCwd) ?? NSHomeDirectory()
+        cwdPerCliType = try c.decodeIfPresent([String: String].self, forKey: .cwdPerCliType) ?? [:]
         defaultShell = try c.decodeIfPresent(String.self, forKey: .defaultShell) ?? "/bin/zsh"
         promptPattern = try c.decodeIfPresent(String.self, forKey: .promptPattern) ?? "^> $"
         fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? "SF Mono"
@@ -72,6 +91,7 @@ final class AppConfig: ObservableObject, Codable {
         theme = try c.decodeIfPresent(String.self, forKey: .theme) ?? "dark"
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 1000
         headlessTerminalRows = try c.decodeIfPresent(Int.self, forKey: .headlessTerminalRows) ?? 500
+        setupAutoSave()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -87,6 +107,7 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(defaultCliType, forKey: .defaultCliType)
         try c.encode(claudePath, forKey: .claudePath)
         try c.encode(defaultCwd, forKey: .defaultCwd)
+        try c.encode(cwdPerCliType, forKey: .cwdPerCliType)
         try c.encode(defaultShell, forKey: .defaultShell)
         try c.encode(promptPattern, forKey: .promptPattern)
         try c.encode(fontFamily, forKey: .fontFamily)
@@ -94,6 +115,16 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(theme, forKey: .theme)
         try c.encode(scrollbackLines, forKey: .scrollbackLines)
         try c.encode(headlessTerminalRows, forKey: .headlessTerminalRows)
+    }
+
+    /// Published 속성 변경 시 자동으로 JSON 파일에 저장.
+    /// debounce 0.5초 + 백그라운드 큐 저장으로 뷰 업데이트 사이클과 충돌하지 않는다.
+    private func setupAutoSave() {
+        autoSaveCancellable = objectWillChange
+            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.global(qos: .utility))
+            .sink { [weak self] _ in
+                self?.save()
+            }
     }
 
     // MARK: - Persistence

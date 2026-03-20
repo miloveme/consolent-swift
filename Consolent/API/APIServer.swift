@@ -116,7 +116,8 @@ final class APIServer: ObservableObject {
             }
 
             let config = Session.Config(
-                workingDirectory: body.workingDirectory ?? AppConfig.shared.defaultCwd,
+                name: body.name,
+                workingDirectory: body.workingDirectory ?? AppConfig.shared.cwd(for: cliType),
                 shell: body.shell ?? AppConfig.shared.defaultShell,
                 cliType: cliType,
                 cliArgs: body.cliArgs ?? body.claudeArgs ?? [],
@@ -133,6 +134,7 @@ final class APIServer: ObservableObject {
 
             let response = CreateSessionResponse(
                 sessionId: session.id,
+                name: session.name,
                 status: session.status,
                 createdAt: session.createdAt,
                 localUrl: localUrl,
@@ -159,6 +161,7 @@ final class APIServer: ObservableObject {
 
             return SessionStatusResponse(
                 id: session.id,
+                name: session.name,
                 status: session.status,
                 workingDirectory: session.config.workingDirectory,
                 pendingApproval: session.pendingApproval.map {
@@ -183,6 +186,50 @@ final class APIServer: ObservableObject {
                 sessionManager.deleteSession(id: id)
             }
             return .noContent
+        }
+
+        // PATCH /sessions/:id — 세션 이름 변경
+        router.patch("sessions", ":id") { [self] req -> SessionStatusResponse in
+            guard let id = req.parameters.get("id"),
+                  let session = sessionManager.getSession(id: id) else {
+                throw Abort(.notFound, reason: "Session not found")
+            }
+
+            let body = try req.content.decode(UpdateSessionRequest.self)
+
+            if let newName = body.name {
+                do {
+                    try sessionManager.renameSession(id: id, newName: newName)
+                } catch let error as ManagerError {
+                    switch error {
+                    case .nameAlreadyTaken:
+                        throw Abort(.conflict, reason: error.localizedDescription)
+                    case .invalidName:
+                        throw Abort(.badRequest, reason: error.localizedDescription)
+                    default:
+                        throw Abort(.internalServerError, reason: error.localizedDescription)
+                    }
+                }
+            }
+
+            let statusAppCfg = AppConfig.shared
+            let statusBindHost = statusAppCfg.apiBind == "0.0.0.0" ? "127.0.0.1" : statusAppCfg.apiBind
+
+            return SessionStatusResponse(
+                id: session.id,
+                name: session.name,
+                status: session.status,
+                workingDirectory: session.config.workingDirectory,
+                pendingApproval: session.pendingApproval.map {
+                    ApprovalInfo(id: $0.id, prompt: $0.prompt, detectedAt: $0.detectedAt)
+                },
+                stats: SessionStats(
+                    messagesSent: session.messageCount,
+                    uptimeSeconds: Int(Date().timeIntervalSince(session.createdAt))
+                ),
+                localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
+                tunnelUrl: session.tunnelURL
+            )
         }
 
         // ── Messages ──
@@ -281,8 +328,25 @@ final class APIServer: ObservableObject {
 
     private func registerOpenAIRoutes(on router: RoutesBuilder) {
 
-        // GET /v1/models — 모델 목록 (지원하는 모든 CLI 유형)
-        router.get("v1", "models") { req -> OpenAIModelsResponse in
+        // GET /v1/models — 모델 목록 (활성 세션 이름 기반)
+        // 활성 세션이 있으면 세션 이름을 모델로 반환, 없으면 CLIType 목록 (기존 호환성).
+        router.get("v1", "models") { [self] req -> OpenAIModelsResponse in
+            let activeSessions = sessionManager.listSessions()
+                .filter { $0.status != .terminated }
+
+            if !activeSessions.isEmpty {
+                let models = activeSessions.map { info in
+                    OpenAIModel(
+                        id: info.name,
+                        object: "model",
+                        created: Int(info.createdAt.timeIntervalSince1970),
+                        ownedBy: "consolent"
+                    )
+                }
+                return OpenAIModelsResponse(object: "list", data: models)
+            }
+
+            // 세션이 없으면 지원하는 CLI 유형 표시 (기존 동작)
             let models = CLIType.allCases.map { cliType in
                 let adapter = cliType.createAdapter()
                 return OpenAIModel(
@@ -309,8 +373,8 @@ final class APIServer: ObservableObject {
             let lastUserMessage = lastUserMsg.textContent
             print("[API] 메시지: \(lastUserMessage.prefix(50))")
 
-            // 세션 가져오기 또는 생성
-            let session = try await getOrCreateDefaultSession()
+            // 세션 해결: model 필드로 이름 매칭, 없으면 기존 폴백
+            let session = try await resolveSession(model: body.model)
             let timeout = TimeInterval(body.timeout ?? 300)
             print("[API] 세션: \(session.id), status=\(session.status.rawValue)")
 
@@ -319,7 +383,7 @@ final class APIServer: ObservableObject {
                 print("[API] ▶ 스트리밍 모드 진입")
                 let completionId = "chatcmpl-\(UUID().uuidString.prefix(8).lowercased())"
                 let created = Int(Date().timeIntervalSince1970)
-                let modelId = session.adapter.modelId
+                let modelId = session.name
                 let sseEncoder = JSONEncoder()
                 sseEncoder.keyEncodingStrategy = .convertToSnakeCase
 
@@ -430,7 +494,7 @@ final class APIServer: ObservableObject {
 
             let completionId = "chatcmpl-\(result.messageId)"
             let created = Int(Date().timeIntervalSince1970)
-            let modelId = session.adapter.modelId
+            let modelId = session.name
             let responseText = result.response.result
 
             let openAIResponse = OpenAIChatResponse(
@@ -460,7 +524,25 @@ final class APIServer: ObservableObject {
         }
     }
 
-    /// OpenAI 호환 API용 세션을 가져온다.
+    /// OpenAI 호환 API용 세션 해결.
+    /// model 필드가 있으면 세션 이름으로 매칭, 없으면 기존 폴백 로직 사용.
+    private func resolveSession(model: String?) async throws -> Session {
+        // model 필드로 세션 이름 매칭
+        if let model = model, !model.isEmpty {
+            if let session = sessionManager.getSession(name: model) {
+                guard session.status == .ready else {
+                    throw Abort(.conflict, reason: "Session '\(model)' exists but is not ready (status: \(session.status.rawValue))")
+                }
+                print("[API] 모델 '\(model)' → 세션 '\(session.id)' 매칭")
+                return session
+            }
+            // 매칭 실패 → 기존 폴백 (하위 호환성)
+            print("[API] ⚠️ 모델 '\(model)' 매칭 세션 없음, 기본 세션으로 폴백")
+        }
+        return try await getOrCreateDefaultSession()
+    }
+
+    /// 기본 세션 폴백.
     /// 우선순위: 고정된 세션 → 앱에서 선택된 세션 → 아무 ready 세션 → 에러
     private func getOrCreateDefaultSession() async throws -> Session {
         // 1. 이전에 고정된 세션이 ready면 계속 사용 (대화 컨텍스트 유지)
@@ -574,6 +656,7 @@ extension Session.MessageResponse: @unchecked Sendable, Content {}
 // MARK: - Request/Response DTOs
 
 struct CreateSessionRequest: Content {
+    var name: String?            // 세션 이름 (model ID로 사용). nil이면 CLI 타입 이름 자동 부여.
     var workingDirectory: String?
     var shell: String?
     var cliType: String?
@@ -586,14 +669,20 @@ struct CreateSessionRequest: Content {
 
 struct CreateSessionResponse: Content {
     let sessionId: String
+    let name: String             // 세션 이름 (= 클라이언트의 model 필드와 매칭)
     let status: Session.Status
     let createdAt: Date
     let localUrl: String
     let tunnelUrl: String?
 }
 
+struct UpdateSessionRequest: Content {
+    var name: String?
+}
+
 struct SessionStatusResponse: Content {
     let id: String
+    let name: String             // 세션 이름
     let status: Session.Status
     let workingDirectory: String
     let pendingApproval: ApprovalInfo?
