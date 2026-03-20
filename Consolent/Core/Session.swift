@@ -18,6 +18,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     }
 
     struct Config {
+        /// 세션 이름. OpenAI 호환 API의 model 필드로 사용된다.
+        /// nil이면 cliType.rawValue가 기본값 (예: "claude-code", "gemini", "codex").
+        var name: String? = nil
         var workingDirectory: String
         var shell: String = "/bin/zsh"
         var cliType: CLIType = .claudeCode
@@ -52,6 +55,10 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     let config: Config
     let adapter: CLIAdapter
     let createdAt: Date
+
+    /// 세션 이름. OpenAI 호환 API의 model 필드로 매칭된다.
+    /// 기본값은 cliType.rawValue (예: "claude-code").
+    @Published var name: String
 
     @Published private(set) var status: Status = .initializing
     @Published private(set) var pendingApproval: OutputParser.ApprovalRequest? = nil
@@ -99,6 +106,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         self.id = id ?? "s_\(UUID().uuidString.prefix(8).lowercased())"
         self.config = config
         self.adapter = config.cliType.createAdapter()
+        self.name = config.name ?? config.cliType.rawValue
         self.createdAt = Date()
         // scrollback 버퍼를 충분히 확보하여 긴 응답이 잘리지 않도록 한다.
         // 기본 500행 visible + 10000행 scrollback = 최대 10500행 보존.

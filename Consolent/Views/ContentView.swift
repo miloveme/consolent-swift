@@ -10,9 +10,17 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
 
     @State private var showNewSession = false
+    @State private var newSessionName = ""
     @State private var newSessionCwd = ""
     @State private var newSessionCliType: CLIType = .claudeCode
     @State private var newSessionAutoApprove = false
+
+    /// 현재 이름이 CLI 기본값(claude-code, gemini, codex)이면 false → 타입 변경 시 자동 업데이트
+    private var isSessionNameCustomized: Bool {
+        let defaults = Set(CLIType.allCases.map { $0.rawValue })
+        let trimmed = newSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && !defaults.contains(trimmed)
+    }
 
     var body: some View {
         HSplitView {
@@ -43,8 +51,9 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button(action: {
-                    newSessionCwd = config.defaultCwd
                     newSessionCliType = config.defaultCliType
+                    newSessionName = config.defaultCliType.rawValue
+                    newSessionCwd = config.defaultCwd
                     newSessionAutoApprove = false
                     showNewSession = true
                 }) {
@@ -259,11 +268,27 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .onChange(of: newSessionCliType) { _, newType in
+                        // 이름이 CLI 기본값(claude-code/gemini/codex)이면 타입에 맞춰 자동 변경
+                        if !isSessionNameCustomized {
+                            newSessionName = newType.rawValue
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("세션 이름 (모델 ID)", text: $newSessionName)
+                            .textFieldStyle(.roundedBorder)
+                        if isNewSessionNameDuplicate {
+                            Text("이미 사용 중인 이름입니다")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                    }
 
                     HStack {
                         TextField("작업 디렉토리", text: $newSessionCwd)
                             .textFieldStyle(.roundedBorder)
-                        
+
                         Button("찾아보기…") {
                             let panel = NSOpenPanel()
                             panel.canChooseDirectories = true
@@ -274,7 +299,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    
+
                     Toggle(isOn: $newSessionAutoApprove) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("자동 승인")
@@ -300,7 +325,12 @@ struct ContentView: View {
                 Button("생성") {
                     showNewSession = false
                     Task {
+                        let trimmedName = newSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // 사용자가 커스텀 이름을 입력했으면 명시적 전달 (중복 시 에러).
+                        // CLI 기본값이면 nil → SessionManager가 중복 시 자동 번호 부여.
+                        let sessionName: String? = isSessionNameCustomized ? trimmedName : nil
                         let sessionConfig = Session.Config(
+                            name: sessionName,
                             workingDirectory: newSessionCwd.isEmpty ? config.defaultCwd : newSessionCwd,
                             shell: config.defaultShell,
                             cliType: newSessionCliType,
@@ -311,12 +341,20 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+                .disabled(isNewSessionNameDuplicate)
             }
             .padding(24)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(Divider(), alignment: .top)
         }
-        .frame(width: 450, height: 380)
+        .frame(width: 450, height: 420)
+    }
+
+    /// 세션 이름 중복 여부 (입력 중 실시간 체크)
+    private var isNewSessionNameDuplicate: Bool {
+        let name = newSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        return sessionManager.isNameTaken(name)
     }
 }
 
@@ -336,11 +374,22 @@ struct SessionRow: View {
                         .fill(statusColor)
                         .frame(width: 8, height: 8)
                         .shadow(color: statusColor.opacity(0.4), radius: 2)
-                    
-                    Text(session.config.cliType.displayName)
+
+                    Text(session.name)
                         .font(.system(.caption, design: .rounded))
                         .fontWeight(.medium)
                         .foregroundColor(.primary)
+
+                    // 이름이 CLI 타입과 다르면 타입 뱃지 표시
+                    if session.name != session.config.cliType.rawValue {
+                        Text(session.config.cliType.displayName)
+                            .font(.system(.caption2))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.secondary.opacity(0.1))
+                            .cornerRadius(3)
+                    }
 
                     Text(session.id)
                         .font(.system(.caption2, design: .monospaced))
@@ -352,7 +401,7 @@ struct SessionRow: View {
                             pasteboard.clearContents()
                             pasteboard.setString(session.id, forType: .string)
                         }
-                    
+
                     if session.status == .busy {
                         ProgressView()
                             .controlSize(.mini)
