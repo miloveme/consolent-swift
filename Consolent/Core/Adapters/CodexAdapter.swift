@@ -147,8 +147,10 @@ struct CodexAdapter: CLIAdapter {
     // MARK: - Response Parsing
 
     func cleanResponse(_ screenText: String) -> String {
-        // Step 1: Null 문자 제거 (SwiftTerm wide char 패딩)
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
+        // Step 1: Null 문자 → 공백 변환 (SwiftTerm wide char 패딩 + 커서 이동 빈 셀)
+        // \0을 공백으로 치환해야 단어 사이 띄어쓰기가 보존된다.
+        // CJK 패딩 공백은 Step 4의 CJKSpacingFix에서 처리.
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")
@@ -159,6 +161,7 @@ struct CodexAdapter: CLIAdapter {
         //   - phase 2: 어시스턴트 응답 수집 중 (• 이후)
         var responseLines: [String] = []
         var lastResponseLines: [String] = []  // › 이전에 수집된 응답 백업
+        var backupProcessingDetected = false   // 백업 이후 새 처리(Working/Running)가 감지됐는지
         var phase = 0  // 0=초기, 1=사용자입력구간, 2=어시스턴트응답
 
         for line in lines {
@@ -174,9 +177,11 @@ struct CodexAdapter: CLIAdapter {
             // TUI chrome 필터보다 먼저 체크
             // Codex는 응답 후 입력 플레이스홀더(› Find and fix...)를 표시하므로
             // 수집된 응답을 백업해두고, 이후 새 응답이 없으면 복원한다.
+            // 단, 새 메시지 처리 중(• Working... → phase 2)이면 복원하지 않는다.
             if trimmed.hasPrefix("› ") {
                 if phase == 2 && !responseLines.isEmpty {
                     lastResponseLines = responseLines
+                    backupProcessingDetected = false  // 새 백업 시점에서 리셋
                 }
                 responseLines = []
                 phase = 1
@@ -190,11 +195,17 @@ struct CodexAdapter: CLIAdapter {
                 if Self.isToolLine(trimmed) {
                     // phase 2 유지하되 도구 줄 자체는 수집하지 않음
                     if phase != 2 { phase = 2 }
+                    backupProcessingDetected = true
                     continue
                 }
 
                 // 상태 표시 필터 (• Working, • Analyzing 등)
+                // 상태 줄 자체는 수집하지 않지만, 새 처리가 시작됐음을 표시 (phase 2 전환).
+                // 이렇게 해야 › 플레이스홀더 후 이전 응답 복원 시
+                // "처리 중" 상태와 "아직 새 메시지 없음" 상태를 구분할 수 있다.
                 if Self.isStatusLine(trimmed) {
+                    if phase != 2 { phase = 2 }
+                    backupProcessingDetected = true
                     continue
                 }
 
@@ -247,8 +258,10 @@ struct CodexAdapter: CLIAdapter {
             }
         }
 
-        // 마지막 › 이후 새 응답이 없으면 (입력 플레이스홀더였음) → 이전 응답 복원
-        if responseLines.isEmpty && !lastResponseLines.isEmpty {
+        // 마지막 › 이후 새 응답이 없고 새 처리도 감지되지 않았으면 (입력 플레이스홀더였음) → 이전 응답 복원.
+        // 백업 이후 • Working... / • Running... 등이 감지됐으면 새 메시지 처리 중이므로 복원하지 않는다.
+        // 이 조건이 없으면 연속 요청 시 이전 응답이 그대로 다시 반환되는 버그가 발생한다.
+        if responseLines.isEmpty && !lastResponseLines.isEmpty && !backupProcessingDetected {
             responseLines = lastResponseLines
         }
 

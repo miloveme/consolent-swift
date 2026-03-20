@@ -33,8 +33,10 @@ struct ClaudeCodeAdapter: CLIAdapter {
     // MARK: - Response Parsing
 
     func cleanResponse(_ screenText: String) -> String {
-        // Step 1: Null 문자 제거 (SwiftTerm wide char 패딩)
-        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: "")
+        // Step 1: Null 문자 → 공백 변환 (SwiftTerm wide char 패딩 + 커서 이동 빈 셀)
+        // \0을 공백으로 치환해야 단어 사이 띄어쓰기가 보존된다.
+        // CJK 패딩 공백은 Step 4의 CJKSpacingFix에서 처리.
+        var cleaned = screenText.replacingOccurrences(of: "\u{0000}", with: " ")
         cleaned = cleaned.replacingOccurrences(of: "\u{007F}", with: "")
 
         let lines = cleaned.components(separatedBy: "\n")
@@ -71,10 +73,16 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 phase = 2
 
                 // TUI 도구 사용 표시 제거
-                if trimmed.range(of: "⏺\\s+(Read|Wrote|Ran|Created|Updated|Deleted|Searched|Listed)\\s+.*\\(ctrl\\+", options: .regularExpression) != nil {
+                var stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
+                // (ctrl+o to expand) 등 TUI 확장 힌트만 텍스트에서 제거 (줄 자체는 유지)
+                stripped = stripped.replacingOccurrences(
+                    of: "\\s*\\(ctrl\\+[a-z]\\s+to\\s+expand\\)",
+                    with: "", options: .regularExpression
+                )
+                // thinking 인디케이터 필터 (스피너 + 랜덤 단어, thinking effort 등)
+                if Self.isThinkingIndicator(stripped) {
                     continue
                 }
-                let stripped = trimmed.replacingOccurrences(of: "^⏺\\s*", with: "", options: .regularExpression)
                 if !stripped.isEmpty {
                     responseLines.append(stripped)
                 }
@@ -166,6 +174,28 @@ struct ClaudeCodeAdapter: CLIAdapter {
         return false
     }
 
+    /// Claude Code thinking 인디케이터 감지.
+    /// 스피너 문자로 시작하거나 "(thinking with" 패턴을 포함하는 줄.
+    /// 예: "✻ Discombobulating… (thinking with high effort)"
+    ///     "· (thinking with standard effort)"
+    static func isThinkingIndicator(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+
+        // 스피너 문자로 시작하는 줄
+        let spinnerChars: Set<Character> = [
+            "✳", "✶", "✻", "✽", "✢", "·", "◉", "○", "◍", "◎", "●",
+            "◐", "◑", "◒", "◓", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
+        ]
+        if let first = trimmed.first, spinnerChars.contains(first) { return true }
+
+        // "thinking with high/standard effort" 포함 (괄호 유무 모두)
+        if trimmed.contains("thinking with high effort") { return true }
+        if trimmed.contains("thinking with standard effort") { return true }
+
+        return false
+    }
+
     private static func isSpinnerOnlyLine(_ text: String) -> Bool {
         let spinnerChars: Set<Character> = [
             "✳", "✶", "✻", "✽", "✢", "·", "◉", "○", "◍", "◎", "●",
@@ -183,6 +213,14 @@ struct ClaudeCodeAdapter: CLIAdapter {
             "esc to interrupt", "? for shortcuts", "api error",
             "bypass permissions", "native installation",
             "shift+tab", "to cycle",
+            "thinking with high effort",    // thinking effort 표시
+            "thinking with standard effort",
+            "ctrl+o to expand",        // 도구 사용 확장 힌트
+            "ctrl+r to expand",        // 읽기 확장 힌트
+            "running…", "running...",  // 도구 실행 상태
+            "(no output)",             // 도구 출력 없음
+            "baked for",               // Claude Code 실행 시간
+            "thought for",             // thinking 시간
         ]
         for pattern in quickPatterns {
             if lowered.contains(pattern) { return true }
@@ -196,6 +234,11 @@ struct ClaudeCodeAdapter: CLIAdapter {
             return true
         }
 
+        // 스피너/thinking 인디케이터 줄
+        if isThinkingIndicator(text) {
+            return true
+        }
+
         let statusPatterns = [
             "Streaming…", "Flowing…", "Thinking…", "Processing…",
             "Reading…", "Writing…", "Searching…", "Analyzing…",
@@ -206,9 +249,8 @@ struct ClaudeCodeAdapter: CLIAdapter {
         }
 
         let regexPatterns = [
-            "^\\d+\\.?\\d*[kK]?\\s+tokens?$",
+            "^\\d+\\.?\\d*[kK]?\\s+tokens?",   // "3.1k tokens" (trailing 허용)
             "^\\d+\\s+tool\\s+use",
-            "^\\d+\\.?\\d*[kK]?\\s+tokens?.*\\d+\\.?\\d*[kK]?\\s+remaining",
         ]
         for pattern in regexPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {

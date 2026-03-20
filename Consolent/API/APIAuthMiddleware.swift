@@ -7,8 +7,10 @@ struct APIAuthMiddleware: AsyncMiddleware {
     let apiKey: String
 
     func respond(to request: Request, chainingTo next: AsyncResponder) async throws -> Response {
+        print("[Auth] \(request.method) \(request.url.path)")
         // Authorization: Bearer <key>
         guard let authHeader = request.headers[.authorization].first else {
+            print("[Auth] ❌ Authorization 헤더 없음")
             throw Abort(.unauthorized, reason: "Missing Authorization header")
         }
 
@@ -16,9 +18,11 @@ struct APIAuthMiddleware: AsyncMiddleware {
         guard parts.count == 2,
               parts[0].lowercased() == "bearer",
               String(parts[1]) == apiKey else {
+            print("[Auth] ❌ API 키 불일치 (받은 키: \(authHeader.prefix(20))...)")
             throw Abort(.unauthorized, reason: "Invalid API key")
         }
 
+        print("[Auth] ✅ 인증 통과")
         return try await next.respond(to: request)
     }
 }

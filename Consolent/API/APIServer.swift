@@ -297,7 +297,9 @@ final class APIServer: ObservableObject {
 
         // POST /v1/chat/completions — 채팅 완성 (OpenAI 호환)
         router.post("v1", "chat", "completions") { [self] req -> Response in
+            print("[API] /v1/chat/completions 요청 수신")
             let body = try req.content.decode(OpenAIChatRequest.self)
+            print("[API] stream=\(body.stream ?? false), model=\(body.model ?? "default"), messages=\(body.messages.count)개")
 
             // 마지막 user 메시지 추출
             guard let lastUserMsg = body.messages.last(where: { $0.role == "user" }),
@@ -305,12 +307,125 @@ final class APIServer: ObservableObject {
                 throw Abort(.badRequest, reason: "No user message found")
             }
             let lastUserMessage = lastUserMsg.textContent
+            print("[API] 메시지: \(lastUserMessage.prefix(50))")
 
             // 세션 가져오기 또는 생성
             let session = try await getOrCreateDefaultSession()
-
-            // 메시지 전송
             let timeout = TimeInterval(body.timeout ?? 300)
+            print("[API] 세션: \(session.id), status=\(session.status.rawValue)")
+
+            // stream 모드: 실시간 SSE (Server-Sent Events)
+            if body.stream == true {
+                print("[API] ▶ 스트리밍 모드 진입")
+                let completionId = "chatcmpl-\(UUID().uuidString.prefix(8).lowercased())"
+                let created = Int(Date().timeIntervalSince1970)
+                let modelId = session.adapter.modelId
+                let sseEncoder = JSONEncoder()
+                sseEncoder.keyEncodingStrategy = .convertToSnakeCase
+
+                let eventStream = session.sendMessageStreaming(
+                    text: lastUserMessage,
+                    timeout: timeout
+                )
+
+                let response = Response(
+                    status: .ok,
+                    headers: [
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    ]
+                )
+
+                response.body = .init(managedAsyncStream: { writer in
+                    // 1. role chunk 전송
+                    let roleChunk = OpenAIStreamChunk(
+                        id: completionId, object: "chat.completion.chunk",
+                        created: created, model: modelId,
+                        choices: [OpenAIStreamChoice(
+                            index: 0,
+                            delta: OpenAIStreamDelta(role: "assistant", content: nil),
+                            finishReason: nil
+                        )]
+                    )
+                    if let d = try? sseEncoder.encode(roleChunk),
+                       let s = String(data: d, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: s.utf8.count + 20)
+                        buf.writeString("data: \(s)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+
+                    // 2. content delta 스트리밍
+                    for await event in eventStream {
+                        switch event {
+                        case .delta(let text):
+                            let contentChunk = OpenAIStreamChunk(
+                                id: completionId, object: "chat.completion.chunk",
+                                created: created, model: modelId,
+                                choices: [OpenAIStreamChoice(
+                                    index: 0,
+                                    delta: OpenAIStreamDelta(role: nil, content: text),
+                                    finishReason: nil
+                                )]
+                            )
+                            if let d = try? sseEncoder.encode(contentChunk),
+                               let s = String(data: d, encoding: .utf8) {
+                                var buf = ByteBufferAllocator().buffer(capacity: s.utf8.count + 20)
+                                buf.writeString("data: \(s)\n\n")
+                                try await writer.writeBuffer(buf)
+                            }
+
+                        case .done:
+                            // finish chunk
+                            let finishChunk = OpenAIStreamChunk(
+                                id: completionId, object: "chat.completion.chunk",
+                                created: created, model: modelId,
+                                choices: [OpenAIStreamChoice(
+                                    index: 0,
+                                    delta: OpenAIStreamDelta(role: nil, content: nil),
+                                    finishReason: "stop"
+                                )]
+                            )
+                            if let d = try? sseEncoder.encode(finishChunk),
+                               let s = String(data: d, encoding: .utf8) {
+                                var buf = ByteBufferAllocator().buffer(capacity: s.utf8.count + 20)
+                                buf.writeString("data: \(s)\n\n")
+                                try await writer.writeBuffer(buf)
+                            }
+                            // [DONE] 마커
+                            var doneBuf = ByteBufferAllocator().buffer(capacity: 20)
+                            doneBuf.writeString("data: [DONE]\n\n")
+                            try await writer.writeBuffer(doneBuf)
+
+                        case .error(let msg):
+                            // 에러를 content chunk로 전송 후 종료
+                            let errChunk = OpenAIStreamChunk(
+                                id: completionId, object: "chat.completion.chunk",
+                                created: created, model: modelId,
+                                choices: [OpenAIStreamChoice(
+                                    index: 0,
+                                    delta: OpenAIStreamDelta(role: nil, content: "[Error: \(msg)]"),
+                                    finishReason: "stop"
+                                )]
+                            )
+                            if let d = try? sseEncoder.encode(errChunk),
+                               let s = String(data: d, encoding: .utf8) {
+                                var buf = ByteBufferAllocator().buffer(capacity: s.utf8.count + 20)
+                                buf.writeString("data: \(s)\n\n")
+                                try await writer.writeBuffer(buf)
+                            }
+                            var doneBuf = ByteBufferAllocator().buffer(capacity: 20)
+                            doneBuf.writeString("data: [DONE]\n\n")
+                            try await writer.writeBuffer(doneBuf)
+                        }
+                    }
+                })
+
+                return response
+            }
+
+            // 비-stream 모드: 일반 JSON
             let result = try await session.sendMessage(text: lastUserMessage, timeout: timeout)
 
             let completionId = "chatcmpl-\(result.messageId)"
@@ -318,68 +433,6 @@ final class APIServer: ObservableObject {
             let modelId = session.adapter.modelId
             let responseText = result.response.result
 
-            // stream 모드: SSE (Server-Sent Events) 형식
-            if body.stream == true {
-                let encoder = JSONEncoder()
-                encoder.keyEncodingStrategy = .convertToSnakeCase
-
-                // 1. role chunk
-                let roleChunk = OpenAIStreamChunk(
-                    id: completionId, object: "chat.completion.chunk",
-                    created: created, model: modelId,
-                    choices: [OpenAIStreamChoice(
-                        index: 0,
-                        delta: OpenAIStreamDelta(role: "assistant", content: nil),
-                        finishReason: nil
-                    )]
-                )
-
-                // 2. content chunk (전체 응답)
-                let contentChunk = OpenAIStreamChunk(
-                    id: completionId, object: "chat.completion.chunk",
-                    created: created, model: modelId,
-                    choices: [OpenAIStreamChoice(
-                        index: 0,
-                        delta: OpenAIStreamDelta(role: nil, content: responseText),
-                        finishReason: nil
-                    )]
-                )
-
-                // 3. finish chunk
-                let finishChunk = OpenAIStreamChunk(
-                    id: completionId, object: "chat.completion.chunk",
-                    created: created, model: modelId,
-                    choices: [OpenAIStreamChoice(
-                        index: 0,
-                        delta: OpenAIStreamDelta(role: nil, content: nil),
-                        finishReason: "stop"
-                    )]
-                )
-
-                var sseBody = ""
-                if let d = try? encoder.encode(roleChunk), let s = String(data: d, encoding: .utf8) {
-                    sseBody += "data: \(s)\n\n"
-                }
-                if let d = try? encoder.encode(contentChunk), let s = String(data: d, encoding: .utf8) {
-                    sseBody += "data: \(s)\n\n"
-                }
-                if let d = try? encoder.encode(finishChunk), let s = String(data: d, encoding: .utf8) {
-                    sseBody += "data: \(s)\n\n"
-                }
-                sseBody += "data: [DONE]\n\n"
-
-                return Response(
-                    status: .ok,
-                    headers: [
-                        "Content-Type": "text/event-stream",
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive"
-                    ],
-                    body: .init(string: sseBody)
-                )
-            }
-
-            // 비-stream 모드: 일반 JSON
             let openAIResponse = OpenAIChatResponse(
                 id: completionId,
                 object: "chat.completion",

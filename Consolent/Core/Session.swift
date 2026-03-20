@@ -39,6 +39,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let durationMs: Int
     }
 
+    /// 스트리밍 이벤트 타입
+    enum StreamEvent: Sendable {
+        case delta(String)           // 새 텍스트 청크
+        case done(MessageResponse)   // 완료 + 메타데이터
+        case error(String)           // 에러
+    }
+
     // MARK: - Properties
 
     let id: String
@@ -77,6 +84,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private var currentMessageId: String?
     private var currentResponseBuffer = Data()
     private var messageStartTime: Date?
+
+    // 스트리밍 전용 상태
+    private var streamContinuation: AsyncStream<StreamEvent>.Continuation?
+    private var streamSentLength: Int = 0
+    private var streamPollTimer: DispatchSourceTimer?
+    /// 메시지 전송 시점의 cleanResponse 결과 (이전 턴의 응답).
+    /// 스트리밍 폴링에서 이전 응답이 그대로 반환되는 것을 감지하여 스킵하는 데 사용.
+    private var streamBaselineText: String?
 
     // MARK: - Init
 
@@ -173,6 +188,77 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         }
     }
 
+    /// 메시지를 보내고 응답을 실시간 스트리밍한다.
+    /// PTY 출력이 올 때마다 화면을 스냅샷 → cleanResponse() → diff → delta 전송.
+    func sendMessageStreaming(text: String, timeout: TimeInterval = 300) -> AsyncStream<StreamEvent> {
+        let messageId = "m_\(UUID().uuidString.prefix(8).lowercased())"
+
+        let (stream, continuation) = AsyncStream<StreamEvent>.makeStream()
+
+        // status 확인
+        guard status == .ready else {
+            continuation.yield(.error("Session is not ready (status: \(status.rawValue))"))
+            continuation.finish()
+            return stream
+        }
+
+        DispatchQueue.main.async { [self] in
+            status = .busy
+            messageCount += 1
+        }
+
+        currentMessageId = messageId
+        currentResponseBuffer = Data()
+        messageStartTime = Date()
+        streamContinuation = continuation
+        streamSentLength = 0
+
+        // 메시지 전송 전 현재 화면의 cleanResponse 결과를 baseline으로 캡처.
+        // 이전 턴의 응답이 스트리밍 도중 다시 반환되는 것을 방지한다.
+        // (Codex 등에서 backup/restore 로직으로 이전 응답이 복원될 수 있음)
+        let currentScreen = readHeadlessBuffer()
+        streamBaselineText = adapter.cleanResponse(currentScreen)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 파서 모니터링 시작
+        parser.completionMode = .contentCheck
+        parser.idleTimeout = 1.0
+        parser.startMonitoring()
+
+        // PTY에 텍스트 전송
+        do {
+            try ptyProcess.write(text)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in
+                try? self.ptyProcess.write("\r")
+            }
+        } catch {
+            streamContinuation = nil
+            continuation.yield(.error(error.localizedDescription))
+            continuation.finish()
+            resetStreamingState()
+            return stream
+        }
+
+        // 200ms 폴링 타이머 시작 — main queue에서 실행 (headlessTerminal 스레드 안전)
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.2, repeating: 0.2)
+        timer.setEventHandler { [weak self] in
+            self?.pollStreamingDelta()
+        }
+        timer.resume()
+        streamPollTimer = timer
+
+        // 타임아웃 설정
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self, self.currentMessageId == messageId else { return }
+            if self.streamContinuation != nil {
+                self.completeStreamingResponse(signal: .idleTimeout)
+            }
+        }
+
+        return stream
+    }
+
     /// Raw 입력을 PTY에 주입한다.
     func injectInput(text: String) throws {
         try ptyProcess.write(text)
@@ -191,7 +277,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
         let response = approved ? "y\r" : "n\r"
         try ptyProcess.write(response)
-        let hasActiveContinuation = responseContinuation != nil
+        let hasActiveContinuation = responseContinuation != nil || streamContinuation != nil
         DispatchQueue.main.async { [self] in
             pendingApproval = nil
             status = hasActiveContinuation ? .busy : .ready
@@ -269,10 +355,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
             }
         }
 
-        // 응답 완료 감지
+        // 응답 완료 감지 — 스트리밍/비스트리밍 분기
         parser.onResponseComplete = { [weak self] signal in
             guard let self else { return }
-            self.completeResponse(signal: signal)
+            if self.streamContinuation != nil {
+                self.completeStreamingResponse(signal: signal)
+            } else {
+                self.completeResponse(signal: signal)
+            }
         }
 
         // 승인 프롬프트 감지
@@ -301,7 +391,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         }
 
         // 응답 수집 중이면 현재 응답 버퍼에도 추가
-        if responseContinuation != nil {
+        if responseContinuation != nil || streamContinuation != nil {
             currentResponseBuffer.append(data)
         }
 
@@ -412,6 +502,213 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         // 메시지 응답 대기용 설정으로 복원
         parser.completionMode = .contentCheck
         parser.idleTimeout = 1.0
+    }
+
+    // MARK: - Streaming Internals
+
+    /// 폴링 타이머에서 호출: 헤드리스 버퍼 스냅샷 → cleanResponse() → diff → delta 전송.
+    private func pollStreamingDelta() {
+        guard let continuation = streamContinuation else { return }
+
+        let screenText = readHeadlessBuffer()
+        let cleanText = Self.filterStreamingNoise(
+            adapter.cleanResponse(screenText)
+        )
+
+        let currentLength = cleanText.count
+
+        // 디버그 로깅: 스트리밍 폴링 상태 (처음 60초간, 5초마다)
+        #if DEBUG
+        if let start = messageStartTime {
+            let elapsed = Date().timeIntervalSince(start)
+            if elapsed < 60, Int(elapsed * 5) % 5 == 0 {
+                let bufferLines = screenText.components(separatedBy: "\n").count
+                let hasClaudeMarker = screenText.contains("⏺")
+                let hasGeminiMarker = screenText.contains("✦")
+                let hasCodexMarker = screenText.contains("•")
+                if cleanText.isEmpty && streamSentLength == 0 {
+                    print("[Stream] poll \(String(format: "%.1f", elapsed))s: buffer=\(bufferLines)행, ⏺=\(hasClaudeMarker), ✦=\(hasGeminiMarker), •=\(hasCodexMarker), clean=\"\" (대기 중)")
+                }
+            }
+        }
+        #endif
+
+        // 이전 턴 응답이 그대로 반환된 경우 스킵 (Codex backup/restore 등).
+        // baseline과 동일하면 아직 새 응답이 시작되지 않은 것.
+        // 다른 내용이 나타나면 baseline을 클리어하여 이후 정상 처리.
+        if let baseline = streamBaselineText, !baseline.isEmpty {
+            let trimmedClean = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedClean == baseline && streamSentLength == 0 {
+                #if DEBUG
+                print("[Stream] baseline 일치 → 이전 턴 응답 스킵")
+                #endif
+                return
+            } else if trimmedClean != baseline {
+                // 내용이 변경됨 → baseline 클리어
+                streamBaselineText = nil
+            }
+        }
+
+        // cleanText가 빈 경우 (thinking/tool use 중이거나 TUI 리드로우) → 스킵
+        // scrollback 10000행이 있으므로 scroll-off raw 폴백 불필요
+        guard currentLength > streamSentLength else { return }
+
+        // 새 콘텐츠 증가 — delta 전송
+        let startIndex = cleanText.index(cleanText.startIndex, offsetBy: streamSentLength)
+        let delta = String(cleanText[startIndex...])
+        continuation.yield(.delta(delta))
+        streamSentLength = currentLength
+
+        #if DEBUG
+        if let start = messageStartTime {
+            let elapsed = Date().timeIntervalSince(start)
+            print("[Stream] delta \(String(format: "%.1f", elapsed))s: +\(delta.count)자 (total=\(currentLength))")
+        }
+        #endif
+    }
+
+    /// 스트리밍 응답 완료 핸들러.
+    private func completeStreamingResponse(signal: OutputParser.CompletionSignal) {
+        guard let continuation = streamContinuation else {
+            print("[Session] ⚠️ completeStreamingResponse: no streamContinuation! signal=\(signal)")
+            return
+        }
+        guard let messageId = currentMessageId else {
+            print("[Session] ⚠️ completeStreamingResponse: no messageId! signal=\(signal)")
+            return
+        }
+
+        // 폴링 타이머 정지
+        streamPollTimer?.cancel()
+        streamPollTimer = nil
+        parser.stopMonitoring()
+
+        // 최종 버퍼 읽기 + 정리
+        let rawText = String(data: currentResponseBuffer, encoding: .utf8) ?? ""
+        let screenText = readHeadlessBuffer()
+
+        // .done 응답용 전체 텍스트 (필터 미적용 — 최종 응답은 완전해야 함)
+        var fullCleanText = adapter.cleanResponse(screenText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 빈 응답일 때 에러 감지
+        if fullCleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
+            fullCleanText = errorMsg
+        }
+
+        // 최종 잔여분 전송 — 스트리밍 노이즈 필터 적용 (pollStreamingDelta와 동일 기준)
+        // streamSentLength는 filterStreamingNoise 적용 텍스트 기준이므로
+        // 최종 delta 계산도 동일 필터를 적용해야 offset이 일관된다.
+        let streamFilteredText = Self.filterStreamingNoise(fullCleanText)
+        if streamFilteredText.count > streamSentLength {
+            let startIndex = streamFilteredText.index(streamFilteredText.startIndex, offsetBy: streamSentLength)
+            let remaining = String(streamFilteredText[startIndex...])
+            continuation.yield(.delta(remaining))
+        }
+
+        let filesChanged = OutputParser.extractChangedFiles(from: rawText)
+        let duration = Int((Date().timeIntervalSince(messageStartTime ?? Date())) * 1000)
+
+        let response = MessageResponse(
+            messageId: messageId,
+            response: ResponseBody(
+                result: fullCleanText,
+                raw: AppConfig.shared.includeRawOutput ? rawText : nil,
+                filesChanged: filesChanged,
+                durationMs: duration
+            )
+        )
+
+        continuation.yield(.done(response))
+        continuation.finish()
+
+        // 상태 초기화
+        streamContinuation = nil
+        currentMessageId = nil
+        currentResponseBuffer = Data()
+        messageStartTime = nil
+        resetStreamingState()
+
+        DispatchQueue.main.async { [self] in
+            status = .ready
+        }
+    }
+
+    /// 스트리밍 상태를 초기화한다.
+    private func resetStreamingState() {
+        streamSentLength = 0
+        streamBaselineText = nil
+        streamPollTimer?.cancel()
+        streamPollTimer = nil
+    }
+
+    /// 스트리밍 전용 노이즈 필터.
+    /// cleanResponse() 결과에서 스트리밍 중에만 제거해야 하는 패턴을 필터링한다.
+    /// ⎿ (도구 출력) 줄은 일반 모드 최종 응답에서는 포함될 수 있으므로 여기서만 제거.
+    static func filterStreamingNoise(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .filter { line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                // ⎿ 도구 출력 줄 제거
+                if t.hasPrefix("⎿") { return false }
+                return true
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 경량 TUI chrome 필터 (스크롤 오프 폴백용).
+    /// 스트리밍 중 빈번한 TUI 패턴만 제거한다. 어댑터별 matchesTUIChrome()보다 보수적.
+    static func lightweightTUIChromeFilter(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let filtered = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return true }
+            let lowered = trimmed.lowercased()
+
+            // 공통 TUI chrome 패턴
+            let chromePatterns = [
+                "esc to interrupt", "esc to cancel",
+                "? for shortcuts", "shift+tab",
+                "type your message",
+                "streaming…", "flowing…", "thinking…", "processing…",
+                "reading…", "writing…", "searching…", "analyzing…",
+                "thinking with high effort",    // thinking effort 표시
+                "thinking with standard effort",
+                "ctrl+o to expand",        // 도구 사용 확장 힌트
+                "ctrl+r to expand",        // 읽기 확장 힌트
+            ]
+            for pattern in chromePatterns {
+                if lowered.contains(pattern) { return false }
+            }
+
+            // 상태바 삼각형 마커
+            let statusBarChars: Set<Character> = ["⏵", "▶", "►", "⏸", "▸", "⏩"]
+            if let first = trimmed.first, statusBarChars.contains(first) {
+                return false
+            }
+
+            // 스피너 접두사 줄 (thinking 인디케이터)
+            let spinnerChars: Set<Character> = [
+                "✳", "✶", "✻", "✽", "✢", "·", "◉", "○", "◍", "◎", "●",
+                "◐", "◑", "◒", "◓", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
+            ]
+            if let first = trimmed.first, spinnerChars.contains(first) {
+                return false
+            }
+
+            // ⎿ 도구 출력 줄
+            if trimmed.hasPrefix("⎿") { return false }
+
+            // 토큰 카운트 줄
+            if let regex = try? NSRegularExpression(pattern: "^\\d+\\.?\\d*[kK]?\\s+tokens?", options: []),
+               regex.firstMatch(in: trimmed, options: [], range: NSRange(trimmed.startIndex..., in: trimmed)) != nil {
+                return false
+            }
+
+            return true
+        }
+        return filtered.joined(separator: "\n")
     }
 
     /// Headless 터미널 버퍼에서 전체 텍스트를 읽는다 (scrollback 포함).

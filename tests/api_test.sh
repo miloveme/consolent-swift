@@ -708,7 +708,82 @@ else
     fi
 fi
 
-# ── 17. Empty Message Validation ──
+# ── 17. SSE Streaming ──
+section "OpenAI Compatible — SSE Streaming"
+
+# 스트리밍 응답을 임시 파일에 저장 (curl -N으로 SSE 수신)
+STREAM_TMP=$(mktemp)
+curl -sN --max-time 120 "$BASE_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"claude-code","messages":[{"role":"user","content":"Reply with just: STREAM_OK"}],"stream":true,"timeout":60}' \
+    > "$STREAM_TMP" 2>/dev/null &
+CURL_PID=$!
+
+# 응답 대기 (최대 120초, [DONE] 도착 시 즉시 종료)
+for i in $(seq 1 60); do
+    sleep 2
+    if grep -q "\[DONE\]" "$STREAM_TMP" 2>/dev/null; then
+        break
+    fi
+done
+kill $CURL_PID 2>/dev/null || true
+wait $CURL_PID 2>/dev/null || true
+
+if [ -s "$STREAM_TMP" ]; then
+    # SSE 형식 검증: 모든 비어있지 않은 줄이 "data: "로 시작
+    non_empty_lines=$(grep -v '^$' "$STREAM_TMP" | wc -l | tr -d ' ')
+    data_lines=$(grep -c '^data: ' "$STREAM_TMP" || true)
+
+    if [ "$non_empty_lines" = "$data_lines" ] && [ "$non_empty_lines" -gt 0 ]; then
+        pass "All lines follow SSE format (data: ...)"
+    else
+        fail "SSE format mismatch" "non_empty=$non_empty_lines, data_prefix=$data_lines"
+    fi
+
+    # role chunk 확인 (첫 번째 data 줄에 role이 포함)
+    first_chunk=$(head -1 "$STREAM_TMP")
+    if echo "$first_chunk" | grep -q '"role"'; then
+        pass "First chunk contains role field"
+    else
+        fail "First chunk missing role" "$first_chunk"
+    fi
+
+    # content chunk 확인 (content 필드가 있는 data 줄)
+    content_chunks=$(grep '"content"' "$STREAM_TMP" | grep -v '"content":null' | wc -l | tr -d ' ')
+    if [ "$content_chunks" -gt 0 ]; then
+        pass "Has $content_chunks content chunk(s)"
+    else
+        fail "No content chunks found"
+    fi
+
+    # [DONE] 마커 확인
+    if grep -q 'data: \[DONE\]' "$STREAM_TMP"; then
+        pass "[DONE] marker present"
+    else
+        fail "[DONE] marker missing"
+    fi
+
+    # finish_reason=stop 확인
+    if grep -q '"finish_reason":"stop"' "$STREAM_TMP"; then
+        pass "finish_reason=stop present"
+    else
+        fail "finish_reason=stop missing"
+    fi
+
+    # 여러 청크가 있는지 (최소 3개: role + content + finish)
+    total_chunks=$(grep -c '^data: {' "$STREAM_TMP" || true)
+    if [ "$total_chunks" -ge 3 ]; then
+        pass "Multiple chunks received ($total_chunks)"
+    else
+        fail "Expected at least 3 chunks, got $total_chunks"
+    fi
+else
+    fail "No streaming response received"
+fi
+rm -f "$STREAM_TMP"
+
+# ── 18. Empty Message Validation ──
 section "Input Validation"
 
 response=$(api_post "/v1/chat/completions" '{

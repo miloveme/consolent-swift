@@ -176,7 +176,9 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         let result = adapter.cleanResponse(screen)
         XCTAssertTrue(result.contains("파일 내용을 확인했습니다."))
         XCTAssertTrue(result.contains("코드가 정상입니다."))
-        XCTAssertFalse(result.contains("Read src/main.swift"))
+        // (ctrl+r to expand) 힌트만 제거, 도구 사용 내용은 유지
+        XCTAssertTrue(result.contains("Read src/main.swift"))
+        XCTAssertFalse(result.contains("ctrl+r to expand"))
     }
 
     func testCleanResponse_filtersSeparatorLines() {
