@@ -6,18 +6,28 @@ import XCTest
 /// 로그에서 추출한 회귀 테스트 fixture 파일 형식.
 /// `tools/extract_fixtures.py`가 생성하고, 이 테스트가 로드한다.
 ///
-/// ## 워크플로우
+/// ## Fixture 라이프사이클
 ///
-/// 1. 문제 발생 → 로그 확보 (`~/Library/Logs/Consolent/debug/`)
-/// 2. `python3 tools/extract_fixtures.py` 실행 → fixture 생성
-/// 3. fixture의 `expectedCleanText`를 **올바른 기대값으로 수정**
-/// 4. 테스트 실행 → 실패 (어댑터가 아직 잘못된 결과를 내므로)
-/// 5. 어댑터 수정
-/// 6. 테스트 통과
+/// ```
+/// [추출] → status: "open"
+///   문제 발생 시 `python3 tools/extract_fixtures.py`로 생성.
+///   expectedCleanText는 어댑터의 현재 (버그 포함) 출력.
+///   품질 테스트(노이즈, 중복, 잘림)가 문제를 감지하면 실패.
 ///
-/// ⚠️ 스크립트가 추출한 expectedCleanText는 현재 어댑터의 (잘못된) 출력이다.
-/// 그대로 두면 테스트가 항상 통과하므로 의미가 없다.
-/// 반드시 올바른 기대값으로 수정해야 회귀 테스트로 동작한다.
+/// [교정] → status: "open", corrected: true
+///   expectedCleanText를 올바른 기대값으로 수동 수정.
+///   testCorrectedFixtures가 어댑터를 고칠 때까지 실패.
+///
+/// [해결] → status: "resolved"
+///   어댑터 수정 후 모든 테스트 통과.
+///   회귀 방지를 위해 영구 보관.
+///   `python3 tools/extract_fixtures.py --status` 로 상태 확인.
+///
+/// [정리]
+///   같은 코드 경로를 테스트하는 resolved fixture가 여러 개면
+///   대표 1개만 남기고 나머지 삭제.
+///   `python3 tools/extract_fixtures.py --status --cleanup` 으로 정리.
+/// ```
 private struct FixtureFile: Decodable {
     let metadata: Metadata
     let cases: [FixtureCase]
@@ -27,6 +37,8 @@ private struct FixtureFile: Decodable {
         let sessionId: String
         let cliType: String
         let description: String
+        /// "open" (미해결), "resolved" (해결됨, 회귀 방지용 보관)
+        let status: String?
     }
 
     struct FixtureCase: Decodable {

@@ -444,6 +444,7 @@ def generate_fixture(log_path, events, groups, filters):
             "sessionName": meta["sessionName"],
             "totalMessages": len(groups),
             "extractedCases": len(cases),
+            "status": "open",
             "description": "",
         },
         "cases": cases,
@@ -627,6 +628,121 @@ def process_single_file(log_path, args, filters):
     return output_path, fixture
 
 
+def show_fixture_status(fixtures_dir):
+    """Fixtures 디렉토리의 fixture 상태를 보여준다."""
+    if not os.path.isdir(fixtures_dir):
+        print(f"Fixtures 디렉토리가 없습니다: {fixtures_dir}")
+        return
+
+    files = sorted(Path(fixtures_dir).glob("fixture_*.json"))
+    if not files:
+        print("fixture 파일이 없습니다.")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"  Fixture 현황: {fixtures_dir}")
+    print(f"{'='*70}\n")
+
+    stats = {"open": 0, "resolved": 0, "unknown": 0}
+    total_cases = 0
+    corrected_cases = 0
+
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            continue
+
+        meta = data.get("metadata", {})
+        cases = data.get("cases", [])
+        status = meta.get("status", "?")
+        cli = meta.get("cliType", "?")
+        desc = meta.get("description", "")
+        n_cases = len(cases)
+        n_corrected = sum(1 for c in cases if c.get("corrected"))
+        n_suspicious = sum(1 for c in cases if c.get("suspicious"))
+
+        total_cases += n_cases
+        corrected_cases += n_corrected
+
+        if status == "open":
+            stats["open"] += 1
+            icon = "🔴"
+        elif status == "resolved":
+            stats["resolved"] += 1
+            icon = "🟢"
+        else:
+            stats["unknown"] += 1
+            icon = "⚪"
+
+        name = f.name
+        desc_preview = f" — {desc[:40]}" if desc else ""
+        corrected_flag = f", 교정 {n_corrected}" if n_corrected else ""
+        suspicious_flag = f", 의심 {n_suspicious}" if n_suspicious else ""
+
+        print(f"  {icon} {name}")
+        print(f"     [{cli}] {status} | {n_cases}건{corrected_flag}{suspicious_flag}{desc_preview}")
+
+    print(f"\n  {'─'*50}")
+    print(f"  총 {len(files)}개 파일, {total_cases}건 케이스 (교정 {corrected_cases}건)")
+    print(f"  🔴 open: {stats['open']}  🟢 resolved: {stats['resolved']}")
+    print(f"\n  💡 워크플로우:")
+    print(f"     1. open fixture의 expectedCleanText를 올바른 값으로 수정 + corrected: true")
+    print(f"     2. 어댑터 수정 → xcodebuild test 통과")
+    print(f"     3. status를 \"resolved\"로 변경 → 영구 보관 (회귀 방지)")
+    print(f"{'='*70}\n")
+
+
+def cleanup_fixtures(fixtures_dir, dry_run=True):
+    """resolved 상태이면서 같은 adapterType을 테스트하는 중복 fixture를 정리."""
+    if not os.path.isdir(fixtures_dir):
+        print(f"Fixtures 디렉토리가 없습니다: {fixtures_dir}")
+        return
+
+    files = sorted(Path(fixtures_dir).glob("fixture_*.json"))
+
+    # resolved fixture를 adapterType별로 그룹핑
+    resolved_by_adapter = defaultdict(list)
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            continue
+
+        status = data.get("metadata", {}).get("status", "")
+        if status != "resolved":
+            continue
+
+        for case in data.get("cases", []):
+            adapter = case.get("adapterType", "?")
+            resolved_by_adapter[adapter].append(f)
+            break  # 파일 단위로 1개만
+
+    # 같은 어댑터에 resolved가 3개 이상이면 정리 제안
+    to_remove = []
+    for adapter, fixture_files in resolved_by_adapter.items():
+        if len(fixture_files) > 2:
+            # 가장 오래된 것(첫 번째)은 보관, 나머지 제안
+            extras = fixture_files[2:]
+            to_remove.extend(extras)
+
+    if not to_remove:
+        print("정리할 fixture가 없습니다. (resolved가 어댑터당 2개 이하)")
+        return
+
+    print(f"\n정리 대상 ({len(to_remove)}개):")
+    for f in to_remove:
+        print(f"  {f.name}")
+
+    if dry_run:
+        print(f"\n실제 삭제하려면 --cleanup --confirm 옵션을 사용하세요.")
+    else:
+        for f in to_remove:
+            f.unlink()
+            print(f"  삭제: {f.name}")
+        print(f"\n{len(to_remove)}개 fixture 삭제 완료.")
+
+
 def main():
     import argparse
 
@@ -655,14 +771,14 @@ def main():
   python3 tools/extract_fixtures.py --errors-only       # 에러만
   python3 tools/extract_fixtures.py --suspicious-only   # 의심 케이스만
 
-품질 감지 (🔍 의심 케이스):
-  timeout          — 타임아웃으로 완료
-  streaming_gap    — 스트리밍 누적 ≠ 최종 응답 (>20% 차이)
-  tui_noise        — 응답에 TUI chrome 잔존
-  duplication      — 동일 문장 반복
-  truncation       — 코드 펜스 미닫힘, 문장 중간 끊김
-  high_reduction   — 화면 대비 파싱 결과 <5%
-  streaming_noise  — 스트리밍 델타에 TUI 노이즈
+  # fixture 관리
+  python3 tools/extract_fixtures.py --status            # 현황 확인
+  python3 tools/extract_fixtures.py --cleanup           # 정리 대상 확인
+  python3 tools/extract_fixtures.py --cleanup --confirm # 실제 삭제
+
+fixture 라이프사이클:
+  🔴 open     — 추출 직후. expectedCleanText 교정 + 어댑터 수정 필요.
+  🟢 resolved — 어댑터 수정 완료. 회귀 방지용 영구 보관.
         """,
     )
     parser.add_argument("logfile", nargs="?", default=None,
@@ -683,7 +799,24 @@ def main():
     parser.add_argument("--pretty", action="store_true", default=True, help="JSON 정렬 출력 (기본)")
     parser.add_argument("--compact", action="store_true", help="JSON 압축 출력")
 
+    # fixture 관리
+    parser.add_argument("--status", action="store_true",
+                        help="fixture 현황 대시보드 출력")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="resolved 중복 fixture 정리 (dry-run)")
+    parser.add_argument("--confirm", action="store_true",
+                        help="--cleanup과 함께 사용 — 실제 삭제 실행")
+
     args = parser.parse_args()
+
+    # fixture 관리 명령은 로그 스캔 없이 바로 실행
+    if args.status or args.cleanup:
+        fixtures_dir = args.output_dir
+        if args.status:
+            show_fixture_status(fixtures_dir)
+        if args.cleanup:
+            cleanup_fixtures(fixtures_dir, dry_run=not args.confirm)
+        sys.exit(0)
 
     filters = {
         "message_id": args.message_id,
