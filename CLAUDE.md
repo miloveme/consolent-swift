@@ -174,6 +174,35 @@ JSON 영속화: `~/Library/Application Support/Consolent/config.json`
 2. **긴 응답 스트리밍 조기 종료** — 매우 긴 응답에서 스트리밍이 완료 전에 끊기는 현상
 3. **SF Symbol 경고** — `terminal.badge.plus` 시스템 심볼 없음 (빌드 경고)
 
+## 릴리즈 절차
+
+GitHub 릴리즈 생성 시 **반드시 DMG 파일을 빌드하여 첨부**한다.
+
+```bash
+# 1. 버전 업데이트 (project.yml MARKETING_VERSION + CLAUDE.md)
+
+# 2. Release 빌드 + 아카이브
+xcodebuild archive \
+  -project Consolent.xcodeproj \
+  -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64' \
+  -archivePath build/Consolent.xcarchive
+
+# 3. .app 추출
+cp -R build/Consolent.xcarchive/Products/Applications/Consolent.app build/
+
+# 4. DMG 생성
+hdiutil create -volname Consolent -srcfolder build/Consolent.app \
+  -ov -format UDZO build/Consolent.dmg
+
+# 5. 태그 + 릴리즈 (DMG 첨부)
+git tag vX.Y.Z && git push origin vX.Y.Z
+gh release create vX.Y.Z build/Consolent.dmg --title "vX.Y.Z" --notes "릴리즈 노트"
+
+# 6. 정리
+rm -rf build/
+```
+
 ## 릴리즈 히스토리
 
 | 버전 | 주요 변경 |
