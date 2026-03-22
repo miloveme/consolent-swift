@@ -60,12 +60,18 @@ struct ClaudeCodeAdapter: CLIAdapter {
             // ── 사용자 입력 시작 (❯ / › 프롬프트) ──
             // TUI chrome 필터보다 먼저 체크 (프롬프트 문자가 필터에 매칭되지 않도록)
             // NBSP(\u{00A0})가 공백 대신 들어오는 경우도 처리
+            // 주의: 빈 프롬프트(❯ 만)는 ready 상태 — 응답을 초기화하면 안 됨
             if trimmed.hasPrefix("❯") || trimmed.hasPrefix("›") {
                 let afterPrompt = trimmed.dropFirst()
-                if afterPrompt.isEmpty || afterPrompt.first == " " || afterPrompt.first == "\u{00A0}" {
-                    // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
+                let hasContent = !afterPrompt.trimmingCharacters(in: .whitespaces).isEmpty
+                if hasContent && (afterPrompt.first == " " || afterPrompt.first == "\u{00A0}") {
+                    // 새 턴 (프롬프트 뒤에 실제 텍스트 있음) → 이전 응답 버리고 사용자 입력 구간 진입
                     responseLines = []
                     phase = 1
+                    continue
+                }
+                // 빈 프롬프트 (❯ 만) — ready 상태, 줄만 스킵
+                if !hasContent {
                     continue
                 }
             }
@@ -93,6 +99,11 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 }
                 // TUI chrome 패턴이 ⏺ 뒤에 붙은 경우
                 if Self.matchesTUIChrome(stripped) {
+                    continue
+                }
+                // 구분선이 ⏺ 뒤에 붙은 경우 (TUI 렌더링 잔해)
+                if stripped.hasPrefix("───") || stripped.hasPrefix("━━━")
+                    || stripped.allSatisfy({ $0 == "─" || $0 == "━" }) {
                     continue
                 }
                 if !stripped.isEmpty {
