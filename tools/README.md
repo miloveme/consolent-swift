@@ -497,6 +497,41 @@ xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
 > **주의**: `xcodebuild test`는 반드시 `-scheme Consolent`을 지정해야 한다.
 > 생략하면 `The test action requires that the name of a scheme...` 에러가 발생한다.
 
+### 실패 메시지만 보기
+
+`xcodebuild` 출력이 수백 줄이라 실패를 찾기 어렵다. grep으로 실패만 필터:
+
+```bash
+# 실패 메시지 + 상세 내용 (3줄)
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64' 2>&1 | grep -A3 'error:.*failed'
+```
+
+출력 예시:
+
+```
+RegressionTests.swift:331: error: -[...testStreamingDeltas_consistency] : failed
+  - [fixture_s_afce92_20260322_214237_1341.json] m_5a967ccc: 스트리밍 델타 불일치
+  누적 델타 (952자): "웹용 미로찾기 게임을 만들겠습니다.\n\nReading 1 file…..."
+  최종 응답 (1497자): "웹용 미로찾기 게임을 만들겠습니다.\n\n  ⎿  $ ls /Users/..."
+```
+
+여기서 바로 알 수 있는 것:
+- **어떤 테스트**: `testStreamingDeltas_consistency`
+- **어떤 fixture**: `fixture_s_afce92_20260322_214237_1341.json`
+- **어떤 케이스**: `m_5a967ccc`
+- **무슨 문제**: 스트리밍 누적 952자 vs 최종 1497자 불일치
+
+다른 유용한 필터:
+
+```bash
+# 실패/통과 요약만
+... 2>&1 | grep -E '(passed|failed|SUCCEEDED|FAILED)'
+
+# 테스트 결과 + 회귀 테스트 로그
+... 2>&1 | grep -E '(error:|failed|passed|SUCCEEDED|FAILED|\[RegressionTests\])'
+```
+
 ### alias 설정 (선택)
 
 매번 긴 명령을 치기 번거로우면 shell에 alias를 추가:
@@ -505,9 +540,10 @@ xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
 # ~/.zshrc 또는 ~/.bashrc에 추가
 alias cb='xcodebuild build -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
 alias ct='xcodebuild test -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
+alias ctf='ct 2>&1 | grep -A5 "error:.*failed"'
 ```
 
-이후 `cb`(빌드), `ct`(테스트)로 간단히 실행.
+이후 `cb`(빌드), `ct`(테스트), `ctf`(실패만 보기)로 간단히 실행.
 
 ---
 
