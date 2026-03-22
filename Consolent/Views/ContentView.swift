@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var channelConfigError = ""
     @State private var channelConfigInstalled = false  // Install 완료 후 Undo 표시용
     @State private var channelConfigApiKeyMissing = false  // API 키 미설정
+    @State private var windowVisible = true  // 윈도우 가시성 (TerminalView 활성화 제어)
 
     /// 현재 이름이 CLI 기본값(claude-code, gemini, codex)이면 false → 타입 변경 시 자동 업데이트
     private var isSessionNameCustomized: Bool {
@@ -42,6 +43,17 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 500)
+        .onReceive(NotificationCenter.default.publisher(for: AppDelegate.windowVisibilityChanged)) { notification in
+            if let visible = notification.object as? Bool {
+                windowVisible = visible
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppDelegate.showNewSessionRequested)) { _ in
+            showNewSession = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppDelegate.openSettingsRequested)) { notification in
+            openSettings()
+        }
         .sheet(isPresented: $showNewSession) {
             newSessionSheet
                 .onAppear {
@@ -155,8 +167,13 @@ struct ContentView: View {
     @ViewBuilder
     private var terminalArea: some View {
         if let session = sessionManager.selectedSession {
-            TerminalViewWrapper(session: session)
-                .id(session.id)  // 세션 변경 시 뷰 재생성
+            if windowVisible {
+                TerminalViewWrapper(session: session)
+                    .id(session.id)  // 세션 변경 시 뷰 재생성
+            } else {
+                // 윈도우 숨김 시 TerminalView 비활성화 (headless만 동작)
+                EmptyTerminalView()
+            }
         } else {
             EmptyTerminalView()
         }

@@ -3,6 +3,8 @@ import SwiftUI
 @main
 struct ConsolentApp: App {
 
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var config = AppConfig.shared
     @StateObject private var apiServer = APIServer()
@@ -64,6 +66,9 @@ struct ConsolentApp: App {
                 .keyboardShortcut("[", modifiers: [.command, .shift])
             }
 
+            // ── 설정 메뉴: Cmd+, 감지는 AppDelegate의 NSEvent 로컬 모니터에서 처리 ──
+            // CommandGroup(replacing: .appSettings)는 키보드 단축키를 가로채지 못하므로 제거
+
             // ── Help 메뉴 ──
             CommandGroup(replacing: .help) {
                 Button("Consolent User Guide") {
@@ -107,7 +112,7 @@ struct ConsolentApp: App {
             } catch {
                 print("[Consolent] Failed to start API server: \(error)")
                 print("[Consolent] Error details: \(String(describing: error))")
-                
+
                 let errorDesc = String(describing: error)
                 let userFriendlyError: String
                 if errorDesc.contains("NIOCore.IOError") || errorDesc.contains("address already in use") {
@@ -115,7 +120,7 @@ struct ConsolentApp: App {
                 } else {
                     userFriendlyError = error.localizedDescription
                 }
-                
+
                 await MainActor.run {
                     apiServer.setServerError(userFriendlyError)
                 }

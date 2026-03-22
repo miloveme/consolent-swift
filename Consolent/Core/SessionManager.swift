@@ -76,6 +76,16 @@ final class SessionManager: ObservableObject {
             }
         }
 
+        // 동일 CLI 타입의 초기화 중인 세션이 있으면 완료될 때까지 대기
+        // (동시 시작 시 MCP 서버 등 리소스 충돌 방지)
+        while sessions.values.contains(where: {
+            $0.id != session.id &&
+            $0.status == .initializing &&
+            $0.config.cliType == finalConfig.cliType
+        }) {
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+
         // CLI 시작
         try await session.start()
 
