@@ -31,7 +31,7 @@ if [ "$SKIP_EXTRACT" = false ]; then
     echo "  1/3  Fixture 추출"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    python3 tools/extract_fixtures.py "${EXTRACT_ARGS[@]}"
+    python3 tools/extract_fixtures.py ${EXTRACT_ARGS[@]+"${EXTRACT_ARGS[@]}"}
     echo ""
 fi
 
