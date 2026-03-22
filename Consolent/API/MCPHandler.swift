@@ -160,7 +160,7 @@ final class MCPHandler {
                     "properties": .object([
                         "session_id": .object([
                             "type": .string("string"),
-                            "description": .string("세션 ID")
+                            "description": .string("세션 ID 또는 이름")
                         ])
                     ]),
                     "required": .array([.string("session_id")])
@@ -246,7 +246,7 @@ final class MCPHandler {
                     "properties": .object([
                         "session_id": .object([
                             "type": .string("string"),
-                            "description": .string("세션 ID")
+                            "description": .string("세션 ID 또는 이름")
                         ]),
                         "approval_id": .object([
                             "type": .string("string"),
@@ -268,10 +268,33 @@ final class MCPHandler {
                     "properties": .object([
                         "session_id": .object([
                             "type": .string("string"),
-                            "description": .string("세션 ID")
+                            "description": .string("세션 ID 또는 이름")
                         ])
                     ]),
                     "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "config_get",
+                description: "Consolent 앱의 현재 설정을 조회합니다. API 포트, 로그 레벨, CLI 기본값, 터미널 설정 등 모든 설정을 반환합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "config_update",
+                description: "Consolent 앱의 설정을 변경합니다. 변경된 설정은 즉시 메모리와 파일 모두에 반영됩니다. 변경 가능한 키: log_level(off/fatal/info/debug), default_cli_type(claude-code/codex/gemini), default_shell, max_concurrent_sessions, session_idle_timeout, font_family, font_size, theme, scrollback_lines, headless_terminal_rows, launch_to_menu_bar, include_raw_output, cwd_per_cli_type 등. 주의: api_port, api_bind 변경은 앱 재시작이 필요합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "settings": .object([
+                            "type": .string("object"),
+                            "description": .string("변경할 설정 키-값 쌍. 예: {\"log_level\": \"off\", \"font_size\": 14}"),
+                            "additionalProperties": .bool(true)
+                        ])
+                    ]),
+                    "required": .array([.string("settings")])
                 ])
             )
         ]
@@ -347,6 +370,10 @@ final class MCPHandler {
             return try toolSessionApprove(arguments)
         case "session_pending":
             return try toolSessionPending(arguments)
+        case "config_get":
+            return await toolConfigGet()
+        case "config_update":
+            return try await toolConfigUpdate(arguments)
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -405,10 +432,7 @@ final class MCPHandler {
     }
 
     private func toolSessionGet(_ args: [String: JSONValue]) throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
+        let session = try resolveSession(args)
 
         var lines = [
             "세션 상세:",
@@ -431,29 +455,22 @@ final class MCPHandler {
     }
 
     private func toolSessionDelete(_ args: [String: JSONValue]) async throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
-        guard sessionManager.getSession(id: sessionId) != nil else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
+        let session = try resolveSession(args)
 
         await MainActor.run {
-            sessionManager.deleteSession(id: sessionId)
+            sessionManager.deleteSession(id: session.id)
         }
 
-        return mcpTextResult("세션 \(sessionId) 삭제 완료.")
+        return mcpTextResult("세션 \(session.name) (\(session.id)) 삭제 완료.")
     }
 
     private func toolSessionSendMessage(_ args: [String: JSONValue]) async throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
+        let session = try resolveSession(args)
         let text = try requireString(args, "text")
         let timeout = TimeInterval(args["timeout"]?.intValue ?? 300)
 
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
-
         guard session.status == .ready else {
-            throw MCPError.sessionNotReady(sessionId, session.status.rawValue)
+            throw MCPError.sessionNotReady(session.id, session.status.rawValue)
         }
 
         let result = try await session.sendMessage(text: text, timeout: timeout)
@@ -463,10 +480,7 @@ final class MCPHandler {
     }
 
     private func toolSessionInput(_ args: [String: JSONValue]) throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
+        let session = try resolveSession(args)
 
         if let text = args["text"]?.stringValue {
             try session.injectInput(text: text)
@@ -484,10 +498,7 @@ final class MCPHandler {
     }
 
     private func toolSessionOutput(_ args: [String: JSONValue]) throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
+        let session = try resolveSession(args)
 
         let raw = String(data: session.outputBuffer, encoding: .utf8) ?? ""
         let text = OutputParser.stripANSI(raw)
@@ -496,13 +507,9 @@ final class MCPHandler {
     }
 
     private func toolSessionApprove(_ args: [String: JSONValue]) throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
+        let session = try resolveSession(args)
         let approvalId = try requireString(args, "approval_id")
         let approved = args["approved"]?.boolValue ?? true
-
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
 
         try session.respondToApproval(id: approvalId, approved: approved)
 
@@ -510,10 +517,7 @@ final class MCPHandler {
     }
 
     private func toolSessionPending(_ args: [String: JSONValue]) throws -> JSONValue {
-        let sessionId = try requireString(args, "session_id")
-        guard let session = sessionManager.getSession(id: sessionId) else {
-            throw MCPError.sessionNotFound(sessionId)
-        }
+        let session = try resolveSession(args)
 
         if let pending = session.pendingApproval {
             return mcpTextResult("""
@@ -527,6 +531,173 @@ final class MCPHandler {
         } else {
             return mcpTextResult("대기 중인 승인 요청이 없습니다.")
         }
+    }
+
+    // MARK: - Config Tools
+
+    private func toolConfigGet() async -> JSONValue {
+        let cfg = await MainActor.run { AppConfig.shared }
+        var lines = [
+            "Consolent 설정:",
+            "",
+            "[API Server]",
+            "- api_enabled: \(cfg.apiEnabled)",
+            "- api_port: \(cfg.apiPort)",
+            "- api_bind: \(cfg.apiBind)",
+            "- include_raw_output: \(cfg.includeRawOutput)",
+            "",
+            "[Sessions]",
+            "- max_concurrent_sessions: \(cfg.maxConcurrentSessions)",
+            "- session_idle_timeout: \(cfg.sessionIdleTimeout)초",
+            "- output_buffer_mb: \(cfg.outputBufferMB)",
+            "",
+            "[CLI Tool]",
+            "- default_cli_type: \(cfg.defaultCliType.rawValue)",
+            "- default_shell: \(cfg.defaultShell)",
+            "- default_cwd: \(cfg.defaultCwd)",
+        ]
+
+        if !cfg.cwdPerCliType.isEmpty {
+            lines.append("- cwd_per_cli_type:")
+            for (k, v) in cfg.cwdPerCliType.sorted(by: { $0.key < $1.key }) {
+                lines.append("    \(k): \(v)")
+            }
+        }
+
+        lines += [
+            "",
+            "[Terminal]",
+            "- font_family: \(cfg.fontFamily)",
+            "- font_size: \(cfg.fontSize)",
+            "- theme: \(cfg.theme)",
+            "- scrollback_lines: \(cfg.scrollbackLines)",
+            "- headless_terminal_rows: \(cfg.headlessTerminalRows)",
+            "",
+            "[App]",
+            "- launch_to_menu_bar: \(cfg.launchToMenuBar)",
+            "",
+            "[Debug]",
+            "- log_level: \(cfg.logLevel)",
+            "- debug_log_retention_days: \(cfg.debugLogRetentionDays)",
+            "- debug_log_max_file_size_mb: \(cfg.debugLogMaxFileSizeMB)",
+        ]
+
+        return mcpTextResult(lines.joined(separator: "\n"))
+    }
+
+    private func toolConfigUpdate(_ args: [String: JSONValue]) async throws -> JSONValue {
+        guard case .object(let settings)? = args["settings"] else {
+            throw MCPError.invalidParameter("settings", "settings 객체가 필요합니다.")
+        }
+
+        var changed: [String] = []
+
+        await MainActor.run {
+            let cfg = AppConfig.shared
+
+            for (key, value) in settings {
+                switch key {
+                case "log_level":
+                    if let v = value.stringValue {
+                        cfg.logLevel = v
+                        changed.append("log_level → \(v)")
+                    }
+                case "default_cli_type":
+                    if let v = value.stringValue, let cliType = CLIType(rawValue: v) {
+                        cfg.defaultCliType = cliType
+                        changed.append("default_cli_type → \(v)")
+                    }
+                case "default_shell":
+                    if let v = value.stringValue {
+                        cfg.defaultShell = v
+                        changed.append("default_shell → \(v)")
+                    }
+                case "default_cwd":
+                    if let v = value.stringValue {
+                        cfg.defaultCwd = v
+                        changed.append("default_cwd → \(v)")
+                    }
+                case "max_concurrent_sessions":
+                    if let v = value.intValue {
+                        cfg.maxConcurrentSessions = v
+                        changed.append("max_concurrent_sessions → \(v)")
+                    }
+                case "session_idle_timeout":
+                    if let v = value.intValue {
+                        cfg.sessionIdleTimeout = v
+                        changed.append("session_idle_timeout → \(v)")
+                    }
+                case "output_buffer_mb":
+                    if let v = value.intValue {
+                        cfg.outputBufferMB = v
+                        changed.append("output_buffer_mb → \(v)")
+                    }
+                case "include_raw_output":
+                    if let v = value.boolValue {
+                        cfg.includeRawOutput = v
+                        changed.append("include_raw_output → \(v)")
+                    }
+                case "font_family":
+                    if let v = value.stringValue {
+                        cfg.fontFamily = v
+                        changed.append("font_family → \(v)")
+                    }
+                case "font_size":
+                    if let v = value.intValue {
+                        cfg.fontSize = v
+                        changed.append("font_size → \(v)")
+                    }
+                case "theme":
+                    if let v = value.stringValue {
+                        cfg.theme = v
+                        changed.append("theme → \(v)")
+                    }
+                case "scrollback_lines":
+                    if let v = value.intValue {
+                        cfg.scrollbackLines = v
+                        changed.append("scrollback_lines → \(v)")
+                    }
+                case "headless_terminal_rows":
+                    if let v = value.intValue {
+                        cfg.headlessTerminalRows = v
+                        changed.append("headless_terminal_rows → \(v)")
+                    }
+                case "launch_to_menu_bar":
+                    if let v = value.boolValue {
+                        cfg.launchToMenuBar = v
+                        changed.append("launch_to_menu_bar → \(v)")
+                    }
+                case "debug_log_retention_days":
+                    if let v = value.intValue {
+                        cfg.debugLogRetentionDays = v
+                        changed.append("debug_log_retention_days → \(v)")
+                    }
+                case "debug_log_max_file_size_mb":
+                    if let v = value.intValue {
+                        cfg.debugLogMaxFileSizeMB = v
+                        changed.append("debug_log_max_file_size_mb → \(v)")
+                    }
+                case "api_port":
+                    if let v = value.intValue {
+                        cfg.apiPort = v
+                        changed.append("api_port → \(v) (⚠️ 앱 재시작 필요)")
+                    }
+                case "api_bind":
+                    if let v = value.stringValue {
+                        cfg.apiBind = v
+                        changed.append("api_bind → \(v) (⚠️ 앱 재시작 필요)")
+                    }
+                default:
+                    changed.append("⚠️ 알 수 없는 설정 키: \(key)")
+                }
+            }
+        }
+
+        if changed.isEmpty {
+            return mcpTextResult("변경된 설정이 없습니다.")
+        }
+
+        return mcpTextResult("설정 변경 완료:\n" + changed.map { "- \($0)" }.joined(separator: "\n"))
     }
 
     // MARK: - resources/list
@@ -615,6 +786,20 @@ final class MCPHandler {
             throw MCPError.invalidParameter(key, "\(key)은(는) 필수 파라미터입니다.")
         }
         return value
+    }
+
+    /// 세션을 ID 또는 이름으로 찾는다. session_id 파라미터에 ID나 이름 모두 사용 가능.
+    private func resolveSession(_ args: [String: JSONValue], key: String = "session_id") throws -> Session {
+        let value = try requireString(args, key)
+        // 1. ID로 먼저 시도
+        if let session = sessionManager.getSession(id: value) {
+            return session
+        }
+        // 2. 이름으로 시도
+        if let session = sessionManager.getSession(name: value) {
+            return session
+        }
+        throw MCPError.sessionNotFound(value)
     }
 
     private func keyToBytes(_ key: String) -> Data? {
