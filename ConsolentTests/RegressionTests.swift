@@ -123,10 +123,10 @@ final class RegressionTests: XCTestCase {
 
     private func createAdapter(type: String) -> CLIAdapter? {
         switch type {
-        case "ClaudeCodeAdapter": return ClaudeCodeAdapter()
-        case "GeminiAdapter":    return GeminiAdapter()
-        case "CodexAdapter":     return CodexAdapter()
-        default:                 return nil
+        case "ClaudeCodeAdapter", "claude-code": return ClaudeCodeAdapter()
+        case "GeminiAdapter", "gemini":          return GeminiAdapter()
+        case "CodexAdapter", "codex":            return CodexAdapter()
+        default:                                 return nil
         }
     }
 

@@ -148,6 +148,40 @@ python3 tools/extract_fixtures.py --today
 - 어댑터가 잘못된 결과를 내는 동안 **테스트가 실패**
 - 이 실패가 어댑터를 수정하도록 유도
 
+#### 교정 절차
+
+1. **어댑터를 수정**한다 (예: `ClaudeCodeAdapter.swift`의 `cleanResponse()` 개선)
+
+2. **수정된 어댑터의 실제 출력을 확인**한다:
+   - 임시 테스트를 만들어 `adapter.cleanResponse(screenText)` 결과 출력
+   - 또는 `xcodebuild test` 실행 후 실패 메시지에서 "실제" 값 확인
+
+3. **출력이 올바른지 사람이 판단**한다:
+   - TUI 노이즈가 없는가?
+   - 응답 내용이 정확한가?
+   - 이것이 "정답"으로 고정할 만한 값인가?
+
+4. **fixture JSON을 수정**한다:
+   ```bash
+   # Python으로 수정하면 JSON 인코딩 문제를 피할 수 있음
+   python3 -c "
+   import json
+   path = 'ConsolentTests/Fixtures/fixture_xxx.json'
+   data = json.load(open(path))
+   for c in data['cases']:
+       if c['id'] == 'msg_001':
+           c['expectedCleanText'] = '올바른 정답 텍스트'
+           c['corrected'] = True
+   json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
+   "
+   ```
+
+5. **스트리밍 케이스**: 버그 세션에서 캡처된 `streamingDeltas`는 수정 불가.
+   `null`로 설정하면 스트리밍 일관성 테스트가 해당 케이스를 건너뜀.
+
+> **핵심**: `corrected: true`의 `expectedCleanText`는 **"어댑터의 현재 출력"이 아니라 "사람이 검증한 정답"** 이다.
+> 어댑터가 바뀌어도 이 정답은 바뀌지 않는다 — 그것이 회귀 방지의 핵심.
+
 ### 3단계: 해결 (resolved)
 
 어댑터 수정 후 모든 테스트가 통과하면:
@@ -167,6 +201,42 @@ python3 tools/extract_fixtures.py --resolve --confirm
 - `status`가 `"resolved"`로 변경
 - 회귀 방지를 위해 **영구 보관**
 - 이후 어댑터가 다시 깨지면 테스트가 실패
+
+#### resolved fixture가 나중에 실패하면?
+
+누군가 어댑터를 수정한 후 기존 resolved(corrected) fixture가 실패할 수 있다.
+이때 **새 출력이 정답보다 나은지 나쁜지**를 판단한다:
+
+| 상황 | fixture 수정? | 어댑터 수정? |
+|------|:---:|:---:|
+| **나빠짐** (회귀 발생) | ❌ 건드리지 않음 | ✅ 어댑터 롤백/수정 |
+| **나아짐** (어댑터 개선) | ✅ 새 정답으로 업데이트 | 이미 됨 |
+| **새 버그 발견** | 새 fixture 추출 | ✅ |
+
+자동으로 fixture를 어댑터 출력에 맞춰 바꾸면 회귀 테스트가 아니라 단순 스냅샷 업데이트가 된다.
+**사람이 판단하는 것이 핵심**이다.
+
+### 교정된 Fixture 보호
+
+`corrected: true`가 설정된 fixture는 **재추출로부터 보호**된다:
+
+```bash
+# 일반 실행 — 이미 처리된 로그 건너뜀
+python3 tools/extract_fixtures.py --today
+# ⏭️  이미 추출된 로그 1개 건너뜀
+
+# --force 실행 — 일반 fixture는 재추출하지만, 교정된 것은 보호
+python3 tools/extract_fixtures.py --today --force
+# 🔒 교정된 fixture 보호: 1개 로그 건너뜀 (corrected=true)
+#    → s_afce9290_claude-code_19-55-42.jsonl
+```
+
+| 명령 | 교정된 fixture | 일반 fixture |
+|------|:---:|:---:|
+| 기본 실행 | 🔒 보호 | ⏭️ 건너뜀 |
+| `--force` | 🔒 보호 | 재추출 (새 파일) |
+
+교정된 fixture를 재추출하려면 해당 fixture 파일을 먼저 수동 삭제해야 한다.
 
 ### 4단계: 정리 (cleanup)
 
@@ -396,7 +466,7 @@ message_sent (msg_002)     ← 다음 그룹 시작
 | `id` | 메시지 ID (로그의 `messageId`) |
 | `type` | `"sync"` 또는 `"streaming"` |
 | `message` | 사용자가 보낸 메시지 텍스트 |
-| `adapterType` | 어댑터 클래스명: `ClaudeCodeAdapter`, `GeminiAdapter`, `CodexAdapter` |
+| `adapterType` | 어댑터 식별자. CLI 타입명(`claude-code`, `gemini`, `codex`) 또는 클래스명(`ClaudeCodeAdapter` 등) 모두 지원 |
 | `screenText` | 헤드리스 터미널의 화면 텍스트 (TUI chrome 포함) |
 | `expectedCleanText` | `cleanResponse()` 기대 결과 (추출 시 현재 출력, 교정 시 올바른 값) |
 | `completionSignal` | 완료 감지 신호: `ready_signal`, `timeout` 등 |
@@ -449,6 +519,7 @@ python3 tools/extract_fixtures.py [옵션] [로그파일]
 | `--today` | `-t` | 오늘 로그만 스캔 |
 | `--days N` | `-d` | 최근 N일 로그만 스캔 |
 | `--all` | `-a` | 모든 케이스 추출 (기본: 문제 있는 것만) |
+| `--force` | `-f` | 이미 처리된 로그도 재추출 (단, `corrected: true` fixture는 보호) |
 | `--summary` | `-s` | 요약만 출력, fixture 생성하지 않음 |
 | `--compact` | | JSON 압축 출력 (기본: 2칸 들여쓰기) |
 
@@ -473,36 +544,198 @@ python3 tools/extract_fixtures.py [옵션] [로그파일]
 
 ---
 
-## 일상 워크플로우
+## 빌드 & 테스트
 
-### 매일 (또는 문제 발생 시)
-
-```bash
-# 1. 현황 확인 — 미처리 로그, 만료 임박 경고 확인
-python3 tools/extract_fixtures.py --status
-
-# 2. 문제가 있는 로그에서 fixture 추출
-python3 tools/extract_fixtures.py --today
-
-# 3. (필요 시) 추출된 fixture의 expectedCleanText를 올바른 값으로 교정
-#    corrected: true 추가
-```
-
-### 어댑터 수정 후
+### 기본 명령
 
 ```bash
-# 4. 테스트 실행
+# 프로젝트 루트에서 실행 (Consolent/)
+
+# 빌드
+xcodebuild build -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+
+# 전체 테스트 (회귀 테스트 포함)
 xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
   -destination 'platform=macOS,arch=arm64'
 
-# 5. 통과하면 resolved로 전환
+# 회귀 테스트만 실행
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:ConsolentTests/RegressionTests
+```
+
+> **주의**: `xcodebuild test`는 반드시 `-scheme Consolent`을 지정해야 한다.
+> 생략하면 `The test action requires that the name of a scheme...` 에러가 발생한다.
+
+### 실패 메시지만 보기
+
+`xcodebuild` 출력이 수백 줄이라 실패를 찾기 어렵다. grep으로 실패만 필터:
+
+```bash
+# 실패 메시지 + 상세 내용 (3줄)
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64' 2>&1 | grep -A3 'error:.*failed'
+```
+
+출력 예시:
+
+```
+RegressionTests.swift:331: error: -[...testStreamingDeltas_consistency] : failed
+  - [fixture_s_afce92_20260322_214237_1341.json] m_5a967ccc: 스트리밍 델타 불일치
+  누적 델타 (952자): "웹용 미로찾기 게임을 만들겠습니다.\n\nReading 1 file…..."
+  최종 응답 (1497자): "웹용 미로찾기 게임을 만들겠습니다.\n\n  ⎿  $ ls /Users/..."
+```
+
+여기서 바로 알 수 있는 것:
+- **어떤 테스트**: `testStreamingDeltas_consistency`
+- **어떤 fixture**: `fixture_s_afce92_20260322_214237_1341.json`
+- **어떤 케이스**: `m_5a967ccc`
+- **무슨 문제**: 스트리밍 누적 952자 vs 최종 1497자 불일치
+
+다른 유용한 필터:
+
+```bash
+# 실패/통과 요약만
+... 2>&1 | grep -E '(passed|failed|SUCCEEDED|FAILED)'
+
+# 테스트 결과 + 회귀 테스트 로그
+... 2>&1 | grep -E '(error:|failed|passed|SUCCEEDED|FAILED|\[RegressionTests\])'
+```
+
+### alias 설정 (선택)
+
+매번 긴 명령을 치기 번거로우면 shell에 alias를 추가:
+
+```bash
+# ~/.zshrc 또는 ~/.bashrc에 추가
+alias cb='xcodebuild build -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
+alias ct='xcodebuild test -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
+alias ctf='ct 2>&1 | grep -A5 "error:.*failed"'
+```
+
+이후 `cb`(빌드), `ct`(테스트), `ctf`(실패만 보기)로 간단히 실행.
+
+### log_test.sh — 한방 스크립트
+
+fixture 추출 → 테스트 → 실패만 출력을 한 번에:
+
+```bash
+./tools/log_test.sh              # 추출 + 테스트 + 실패만 출력
+./tools/log_test.sh --today      # 오늘 로그만 추출 후 테스트
+./tools/log_test.sh --days 3     # 최근 3일 로그만
+./tools/log_test.sh --all        # 전체 케이스 추출
+./tools/log_test.sh --skip-extract  # 추출 건너뛰고 테스트만
+```
+
+출력 예시:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  3/3  결과
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ✅ 통과: 5개
+  ❌ 실패: 1개
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  실패 상세
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  testStreamingDeltas_consistency : failed
+  - [fixture_s_afce92...] m_5a967ccc: 스트리밍 델타 불일치
+  누적 델타 (952자): "웹용 미로찾기 게임을 만들겠습니다...."
+  최종 응답 (1497자): "웹용 미로찾기 게임을 만들겠습니다...."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  💡 이 출력을 Claude에게 붙여넣으면 어댑터 수정을 도와줍니다.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+실패가 나오면 **출력 전체를 복사해서 Claude에게 붙여넣기**만 하면 됩니다.
+
+---
+
+## 일상 워크플로우
+
+### 1. 현황 확인
+
+```bash
+python3 tools/extract_fixtures.py --status
+```
+
+미처리 로그, 만료 임박 경고, fixture 상태를 한눈에 확인.
+
+### 2. Fixture 추출
+
+```bash
+# 오늘 로그에서 문제 있는 케이스만 추출
+python3 tools/extract_fixtures.py --today
+```
+
+### 3. 테스트 실행
+
+```bash
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+```
+
+추출된 fixture에 품질 문제가 있으면 **자동으로 테스트가 실패**한다.
+(TUI 노이즈 잔존, 내용 중복, 코드 펜스 미닫힘, 스트리밍 불일치 등)
+
+### 4. 어댑터 수정 + Fixture 교정
+
+테스트 실패 메시지를 보고 어댑터(`Consolent/Core/Adapters/`)를 수정한다.
+
+수정 후, fixture를 교정하여 **정답을 고정**한다:
+
+```bash
+# 1) 어댑터 수정
+
+# 2) 수정된 어댑터의 출력 확인
+#    (테스트 실패 메시지의 "실제" 값을 보거나, 임시 테스트 작성)
+
+# 3) 출력이 올바르면 fixture JSON 교정
+python3 -c "
+import json
+path = 'ConsolentTests/Fixtures/fixture_xxx.json'
+data = json.load(open(path))
+for c in data['cases']:
+    if c['id'] == 'target_case_id':
+        c['expectedCleanText'] = '올바른 정답'
+        c['corrected'] = True
+        # 버그 세션의 스트리밍 델타는 수정 불가 → null 처리
+        if c['type'] == 'streaming':
+            c['streamingDeltas'] = None
+json.dump(data, open(path, 'w'), ensure_ascii=False, indent=2)
+"
+
+# 4) 테스트 통과 확인
+./tools/log_test.sh --skip-extract
+```
+
+> **교정은 안전**: `corrected: true`로 설정된 fixture는 이후 `extract_fixtures.py`를
+> 다시 실행해도 (`--force` 포함) 절대 덮어쓰지 않는다. (🔒 보호)
+
+### 5. Resolve 전환
+
+모든 테스트 통과 후:
+
+```bash
 python3 tools/extract_fixtures.py --resolve --confirm
 ```
 
-### 정기 정리
+resolved 된 fixture는 영구 보관되어 **같은 버그의 재발을 방지**한다.
+
+나중에 누군가 어댑터를 수정해서 resolved fixture가 실패하면:
+- **출력이 나빠짐** → 어댑터만 수정 (fixture는 그대로 = 회귀 방지)
+- **출력이 나아짐** → fixture의 `expectedCleanText`를 새 정답으로 업데이트
+
+### 6. 정기 정리
+
+resolved fixture가 쌓이면:
 
 ```bash
-# 6. resolved fixture가 쌓이면 정리
 python3 tools/extract_fixtures.py --cleanup --confirm
 ```
 
@@ -514,7 +747,7 @@ python3 tools/extract_fixtures.py --cleanup --confirm
 tools/
 ├── README.md                 ← 이 문서
 ├── extract_fixtures.py       ← fixture 추출 + 관리 스크립트
-└── ConsolentTests/           ← (스크립트 실행 시 생성될 수 있는 임시 디렉토리)
+└── log_test.sh               ← 추출 → 테스트 → 실패 출력 한방 스크립트
 
 ConsolentTests/
 ├── Fixtures/                 ← fixture 파일 저장 위치

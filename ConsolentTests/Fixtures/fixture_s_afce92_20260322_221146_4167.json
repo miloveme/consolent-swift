@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "source": "s_afce9290_claude-code_19-55-42.jsonl",
+    "extractedAt": "2026-03-22T22:11:46.830300",
+    "sessionId": "s_afce9290",
+    "cliType": "claude-code",
+    "sessionName": "claude-code",
+    "totalMessages": 2,
+    "extractedCases": 2,
+    "status": "resolved",
+    "description": ""
+  },
+  "cases": [
+    {
+      "id": "m_02e30334",
+      "type": "sync",
+      "message": "하이",
+      "adapterType": "claude-code",
+      "screenText": " ▐▛███▜▌\u0000\u0000\u0000Claude\u0000Code\u0000v2.1.81\n▝▜█████▛▘\u0000\u0000Opus\u00004.6\u0000(1M\u0000context)\u0000with\u0000high\u0000effort\u0000·\u0000Claude\u0000Max\n \u0000▘▘\u0000▝▝\u0000\u0000\u0000\u0000~/Documents/Dev/AI/claude-code\n\n❯ 하\u0000이\u0000                                                                                                                  \n       \n⏺ 하\u0000이\u0000! 무\u0000엇\u0000을\u0000 도\u0000와\u0000드\u0000릴\u0000까\u0000요\u0000?                                                                                            \n\u0000\u0000                                             \u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000                \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯  \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)                   \n                                                                                                                        \n                                                                                                                        \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "expectedCleanText": "하이! 무엇을 도와드릴까요?",
+      "corrected": true,
+      "completionSignal": "responseComplete",
+      "wasEmpty": false,
+      "hasError": false,
+      "suspicious": true,
+      "suspiciousReasons": [
+        "high_reduction"
+      ],
+      "suspiciousDetails": [
+        {
+          "type": "high_reduction",
+          "detail": "화면 1546자 → 파싱 15자 (1.0%)"
+        }
+      ]
+    },
+    {
+      "id": "m_5a967ccc",
+      "type": "streaming",
+      "message": "웹용 미로찾기 게임을 만들어줘",
+      "adapterType": "claude-code",
+      "screenText": " ▐▛███▜▌\u0000\u0000\u0000Claude\u0000Code\u0000v2.1.81\n▝▜█████▛▘\u0000\u0000Opus\u00004.6\u0000(1M\u0000context)\u0000with\u0000high\u0000effort\u0000·\u0000Claude\u0000Max\n \u0000▘▘\u0000▝▝\u0000\u0000\u0000\u0000~/Documents/Dev/AI/claude-code\n\n❯ 하\u0000이\u0000                                                                                                                  \n                  \n\n⏺\u0000하\u0000이\u0000!\u0000무\u0000엇\u0000을\u0000\u0000도\u0000와\u0000드\u0000릴\u0000까\u0000요\u0000?\n\n❯ 웹\u0000용\u0000 미\u0000로\u0000찾\u0000기\u0000 게\u0000임\u0000을\u0000 만\u0000들\u0000어\u0000줘\u0000                                                                                         \n                  \n\n⏺\u0000웹\u0000용\u0000\u0000미\u0000로\u0000찾\u0000기\u0000\u0000게\u0000임\u0000을\u0000\u0000만\u0000들\u0000겠\u0000습\u0000니\u0000다\u0000.\n\n \u0000Reading\u00001\u0000file…\u0000(ctrl+o\u0000to\u0000expand)\n \u0000⎿\u0000\u0000$\u0000ls\u0000/Users/jun/Documents/Dev/AI/claude-code/\n \u0000Read 1 file (ctrl+o to expand)    \n                                                  \n⏺\u0000Write(maze/index.html)ontinue\u0000or\u0000claude\u0000--resume\u0000to\u0000resume\u0000a\u0000conversation\n  ⎿  Wrote 441 lines to maze/index.html               \n       1 <!DOCTYPE html>                                                                  ──────────────────────────────\n─────  2 <html lang=\"ko\">\n       3 <head>                                                                                                         \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n   ──  4 <meta charset=\"UTF-8\">\n       5 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">                                         \n                  \n\u0000\u0000     6 <title>미\u0000로\u0000찾\u0000기\u0000 게\u0000임\u0000</title>                             \n\u0000\u0000\u0000\u0000\u0000 \u00007\u0000<style>\n\u0000\u0000\u0000\u0000\u0000 \u00008\u0000 \u0000* { margin: 0; padding: 0; box-sizing: border-box; }\n\u0000\u0000\u0000\u0000\u0000 \u00009\n\u0000\u0000\u0000\u0000\u0000 10\u0000 \u0000body {\n\u0000\u0000\u0000\u0000\u0000…\u0000+431\u0000lines\u0000(ctrl+o\u0000to\u0000expand)\n\n✢\u0000Julienning…\u0000(1m\u00004s\u0000·\u0000↑\u00001.7k\u0000tokens\u0000·\u0000thought\u0000for\u00002s)\n \u0000⎿\u0000 Tip:\u0000Use\u0000/btw\u0000to\u0000ask\u0000a\u0000quick\u0000side\u0000question\u0000without\u0000interrupting\u0000Claude's\u0000current\u0000work\n⏺\u0000미\u0000로\u0000찾\u0000기\u0000 게\u0000임\u0000을\u0000 만\u0000들\u0000었\u0000습\u0000니\u0000다\u0000! /maze/index.html 파\u0000일\u0000을\u0000\u0000브\u0000라\u0000우\u0000저\u0000에\u0000서\u0000\u0000열\u0000어\u0000보\u0000세\u0000요\u0000.\n                                                                                          ──────────────────────────────\n──기\u0000능\u0000:───────────\n                                                                                                                        \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n──────────────────sions\u0000on (shift+tab\u0000to\u0000cycle)\u0000·\u0000esc\u0000to\u0000interrupt\n❯                                                                                                                       \n  - 미\u0000로\u0000 자\u0000동\u0000 생\u0000성\u0000 — Recursive Backtracking 알\u0000고\u0000리\u0000즘\u0000으\u0000로\u0000 매\u0000번\u0000 새\u0000로\u0000운\u0000 미\u0000로\u0000                                               \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n   ───────────────\n\u0000\u0000-⏵3단\u0000계\u0000 난\u0000이\u0000도\u0000i—s쉬\u0000움\u0000(10x10),f보\u0000통\u0000(20x20),l어\u0000려\u0000움\u0000(35x35)nterrupt\n                                                                                                                        \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n──────────────────sions\u0000on (shift+tab\u0000to\u0000cycle)\u0000·\u0000esc\u0000to\u0000interrupt\n❯ - 이\u0000동\u0000/시\u0000간\u0000 추\u0000적\u0000 — 클\u0000리\u0000어\u0000 시\u0000 결\u0000과\u0000 표\u0000시\u0000                                                                                \n                                                                                                                        \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n──────────────────sions\u0000on (shift+tab\u0000to\u0000cycle)\u0000·\u0000esc\u0000to\u0000interrupt\n❯ - 미\u0000로\u0000 자\u0000동\u0000 생\u0000성\u0000방—향RecursiveWBacktracking 알\u0000고\u0000리\u0000즘\u0000으\u0000로\u0000 매\u0000번\u0000 새\u0000로\u0000운\u0000 미\u0000로\u0000                                               \n    3단\u0000계\u0000 난\u0000이\u0000도\u0000 — 쉬\u0000움\u0000(10x10), 보\u0000통\u0000(20x20), 어\u0000려\u0000움\u0000(35x35)                                                              \n    이\u0000동\u0000/시\u0000간\u0000 추\u0000적\u0000─— 클\u0000리\u0000어\u0000 시\u0000 결\u0000과\u0000 표\u0000시\u0000    ─             ──────────────────────────────────────────────────────────────\n────키\u0000보\u0000드\u0000 조\u0000작\u0000 — 방\u0000향\u0000키\u0000 또\u0000는\u0000 WASD ─    ────────────────────────────────────────────────────────────────────────────────\n────모\u0000바\u0000일\u0000─지\u0000원\u0000───스\u0000와\u0000이\u0000프\u0000 + D-padt버\u0000튼\u0000o\u0000cycle)\u0000·\u0000esc\u0000to\u0000interrupt\n❯                                                                                                                       \n· Scurrying… (1m 11s · ↓ 3.3k tokens)                                                                                   \n                  ──────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work\n                                                                                                                        \n  Bash(open /Users/jun/Documents/Dev/AI/claude-code/maze/index.html)\n─────Running…                                                                             ──────────────────────────────\n──────────────────\n✻ Scurrying… (1m 12s · ↓ 3.3k tokens)                                                                                   \n⏺                 ──────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⎿  (No output)tw to ask a quick side question without interrupting Claude's current work\n                                                                                                                        \n⏺ 브\u0000라\u0000우\u0000저\u0000에\u0000서\u0000 열\u0000었\u0000습\u0000니\u0000다\u0000. 방\u0000향\u0000키\u0000로\u0000 주\u0000황\u0000색\u0000\u0000캐\u0000릭\u0000터\u0000를\u0000\u0000움\u0000직\u0000여\u0000서\u0000\u0000우\u0000하\u0000단\u0000의\u0000\u0000별\u0000까\u0000지\u0000\u0000도\u0000달\u0000하\u0000면\u0000\u0000클\u0000리\u0000어\u0000입\u0000니\u0000다\u0000!\n                                                                                          ──────────────────────────────\n✻─Scurrying… (1m 16s · ↓\u00003.4k tokens)\n  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work                              \n✻ Baked for 1m 16s      ─            ───────────────────────────────────────────────────────────────────────────────────\n                                                                                          \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n──────────────────                                                \n❯                                                                                                                       \n                  \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n──────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                         \n                  \n                                                                                                                        \n                  \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "expectedCleanText": "브라우저에서 열었습니다. 방향키로 주황색 캐릭터를 움직여서 우하단의 별까지 도달하면 클리어입니다!",
+      "completionSignal": "responseComplete",
+      "wasEmpty": false,
+      "hasError": false,
+      "suspicious": true,
+      "suspiciousReasons": [
+        "streaming_gap",
+        "tui_noise",
+        "duplication",
+        "truncation",
+        "streaming_noise"
+      ],
+      "baseline": "하이! 무엇을 도와드릴까요?",
+      "pollCount": 13,
+      "totalDeltaLength": 1133,
+      "streamingDeltas": null,
+      "suspiciousDetails": [
+        {
+          "type": "streaming_gap",
+          "detail": "스트리밍 누적 1133자 vs 최종 1497자 (차이 364자, 24%)"
+        },
+        {
+          "type": "tui_noise",
+          "detail": "TUI 노이즈 4건: '❯', '⎿', 'claude --resume'"
+        },
+        {
+          "type": "duplication",
+          "detail": "중복 문장 1건: '⎿ Tip: Use /btw to ask a quick side question witho'..."
+        },
+        {
+          "type": "truncation",
+          "detail": "마지막 줄이 문장 중간에서 끊김: \"thout interrupting Claude's current work\""
+        },
+        {
+          "type": "streaming_noise",
+          "detail": "스트리밍 델타 3/13개에 TUI 노이즈 포함"
+        }
+      ],
+      "corrected": true
+    }
+  ]
+}

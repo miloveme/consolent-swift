@@ -646,6 +646,31 @@ def get_processed_log_sources(fixtures_dir):
     return sources
 
 
+def get_corrected_log_sources(fixtures_dir):
+    """corrected=true인 케이스가 포함된 fixture의 원본 로그 파일명 목록.
+
+    교정된 fixture는 사람이 검증한 정답이므로 --force로도 덮어쓰면 안 된다.
+    """
+    sources = set()
+    if not os.path.isdir(fixtures_dir):
+        return sources
+
+    for f in Path(fixtures_dir).glob("fixture_*.json"):
+        try:
+            data = json.loads(f.read_text())
+            has_corrected = any(
+                c.get("corrected") is True for c in data.get("cases", [])
+            )
+            if has_corrected:
+                source = data.get("metadata", {}).get("source", "")
+                if source:
+                    sources.add(source)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return sources
+
+
 def scan_unprocessed_logs(log_dir, fixtures_dir, retention_days=7):
     """미처리 로그와 만료 임박 로그를 스캔.
 
@@ -1022,6 +1047,8 @@ fixture 라이프사이클:
     parser.add_argument("--summary", "-s", action="store_true", help="요약만 출력 (fixture 미생성)")
     parser.add_argument("--pretty", action="store_true", default=True, help="JSON 정렬 출력 (기본)")
     parser.add_argument("--compact", action="store_true", help="JSON 압축 출력")
+    parser.add_argument("--force", "-f", action="store_true",
+                        help="이미 추출된 로그도 재추출")
 
     # fixture 관리
     parser.add_argument("--status", action="store_true",
@@ -1079,6 +1106,30 @@ fixture 라이프사이클:
         scope = "오늘" if args.today else f"최근 {args.days}일" if args.days else "전체"
         print(f"📂 로그 디렉토리: {args.log_dir}")
         print(f"📋 스캔 범위: {scope} ({len(log_files)}개 파일)\n")
+
+    # 교정된(corrected) fixture 보호 — --force로도 재추출 불가
+    corrected_sources = get_corrected_log_sources(args.output_dir)
+    if not args.summary and corrected_sources:
+        before = len(log_files)
+        protected = [os.path.basename(f) for f in log_files if os.path.basename(f) in corrected_sources]
+        log_files = [f for f in log_files if os.path.basename(f) not in corrected_sources]
+        if protected:
+            print(f"🔒 교정된 fixture 보호: {len(protected)}개 로그 건너뜀 (corrected=true)")
+            for p in protected:
+                print(f"   → {p}")
+            print()
+
+    # 이미 처리된 로그 건너뛰기
+    processed_sources = get_processed_log_sources(args.output_dir)
+    if not args.summary and not args.force and processed_sources:
+        before = len(log_files)
+        log_files = [f for f in log_files if os.path.basename(f) not in processed_sources]
+        skipped = before - len(log_files)
+        if skipped > 0:
+            print(f"⏭️  이미 추출된 로그 {skipped}개 건너뜀 (--force로 재추출 가능)\n")
+        if not log_files and not args.logfile:
+            print("새로 추출할 로그가 없습니다.")
+            sys.exit(0)
 
     # 파일별 처리
     total_files = 0

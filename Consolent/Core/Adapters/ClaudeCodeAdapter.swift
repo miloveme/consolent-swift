@@ -59,11 +59,21 @@ struct ClaudeCodeAdapter: CLIAdapter {
 
             // ── 사용자 입력 시작 (❯ / › 프롬프트) ──
             // TUI chrome 필터보다 먼저 체크 (프롬프트 문자가 필터에 매칭되지 않도록)
-            if trimmed.hasPrefix("❯ ") || trimmed.hasPrefix("› ") {
-                // 새 턴 → 이전 응답 버리고 사용자 입력 구간 진입
-                responseLines = []
-                phase = 1
-                continue
+            // NBSP(\u{00A0})가 공백 대신 들어오는 경우도 처리
+            // 주의: 빈 프롬프트(❯ 만)는 ready 상태 — 응답을 초기화하면 안 됨
+            if trimmed.hasPrefix("❯") || trimmed.hasPrefix("›") {
+                let afterPrompt = trimmed.dropFirst()
+                let hasContent = !afterPrompt.trimmingCharacters(in: .whitespaces).isEmpty
+                if hasContent && (afterPrompt.first == " " || afterPrompt.first == "\u{00A0}") {
+                    // 새 턴 (프롬프트 뒤에 실제 텍스트 있음) → 이전 응답 버리고 사용자 입력 구간 진입
+                    responseLines = []
+                    phase = 1
+                    continue
+                }
+                // 빈 프롬프트 (❯ 만) — ready 상태, 줄만 스킵
+                if !hasContent {
+                    continue
+                }
             }
 
             // ── 어시스턴트 응답 시작 (⏺ 마커) ──
@@ -83,9 +93,29 @@ struct ClaudeCodeAdapter: CLIAdapter {
                 if Self.isThinkingIndicator(stripped) {
                     continue
                 }
+                // 도구 사용 표시 필터: Write(...), Bash(...), Read(...) 등
+                if Self.isToolInvocation(stripped) {
+                    continue
+                }
+                // TUI chrome 패턴이 ⏺ 뒤에 붙은 경우
+                if Self.matchesTUIChrome(stripped) {
+                    continue
+                }
+                // 구분선이 ⏺ 뒤에 붙은 경우 (TUI 렌더링 잔해)
+                if stripped.hasPrefix("───") || stripped.hasPrefix("━━━")
+                    || stripped.allSatisfy({ $0 == "─" || $0 == "━" }) {
+                    continue
+                }
                 if !stripped.isEmpty {
                     responseLines.append(stripped)
                 }
+                continue
+            }
+
+            // ── 도구 출력 줄 (⎿ 접두사) — 모든 phase에서 필터 ──
+            // Claude Code가 도구 실행 결과를 ⎿ 로 표시
+            // 예: "⎿  $ ls /path", "⎿  Wrote 441 lines to file", "⎿  Tip: Use /btw..."
+            if trimmed.hasPrefix("⎿") {
                 continue
             }
 
@@ -196,6 +226,23 @@ struct ClaudeCodeAdapter: CLIAdapter {
         return false
     }
 
+    /// 도구 사용 표시 줄 감지.
+    /// Claude Code가 도구를 실행할 때 표시하는 줄:
+    ///   "Write(maze/index.html)", "Bash(open /path)", "Read(file.txt)" 등
+    /// 때로는 뒤에 TUI 잔해가 붙기도 함:
+    ///   "Write(maze/index.html)ontinue or claude --resume..."
+    private static func isToolInvocation(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        // Tool(args) 패턴 — 대문자로 시작하는 단어 + 괄호
+        if let regex = try? NSRegularExpression(pattern: "^[A-Z][a-zA-Z]*\\(.+\\)", options: []) {
+            let range = NSRange(trimmed.startIndex..., in: trimmed)
+            if regex.firstMatch(in: trimmed, options: [], range: range) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func isSpinnerOnlyLine(_ text: String) -> Bool {
         let spinnerChars: Set<Character> = [
             "✳", "✶", "✻", "✽", "✢", "·", "◉", "○", "◍", "◎", "●",
@@ -210,7 +257,9 @@ struct ClaudeCodeAdapter: CLIAdapter {
         // 주의: 응답 내용에도 나올 수 있는 패턴은 포함하지 않는다.
         // 예: "is not in"(일반 영어 표현) 등은 제외.
         let quickPatterns = [
-            "esc to interrupt", "? for shortcuts", "api error",
+            "esc to interrupt", "esc to cancel",  // 처리 중 표시
+            "? for shortcuts",                     // 준비 상태 표시
+            "api error",
             "bypass permissions", "native installation",
             "shift+tab", "to cycle",
             "thinking with high effort",    // thinking effort 표시
@@ -221,6 +270,8 @@ struct ClaudeCodeAdapter: CLIAdapter {
             "(no output)",             // 도구 출력 없음
             "baked for",               // Claude Code 실행 시간
             "thought for",             // thinking 시간
+            "claude --resume",         // TUI 세션 안내
+            "tip: use /",              // Claude 팁
         ]
         for pattern in quickPatterns {
             if lowered.contains(pattern) { return true }
@@ -251,6 +302,13 @@ struct ClaudeCodeAdapter: CLIAdapter {
         let regexPatterns = [
             "^\\d+\\.?\\d*[kK]?\\s+tokens?",   // "3.1k tokens" (trailing 허용)
             "^\\d+\\s+tool\\s+use",
+            "^Read\\s+\\d+\\s+file",            // "Read 1 file (ctrl+o to expand)"
+            "^Reading\\s+\\d+\\s+file",          // "Reading 1 file…"
+            "^Wrote\\s+\\d+\\s+lines?",          // "Wrote 441 lines to maze/index.html"
+            "^Write\\(.+\\)",                    // "Write(maze/index.html)"
+            "^Bash\\(.+\\)",                     // "Bash(open /path/to/file)"
+            "^\\s{2,}\\d{1,5}\\s{1,2}\\S",       // 줄번호 파일 미리보기: "     1 <!DOCTYPE html>"
+            "^…\\s*\\+\\d+\\s+lines?",           // "…+431 lines (ctrl+o to expand)"
         ]
         for pattern in regexPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
