@@ -743,6 +743,106 @@ def cleanup_fixtures(fixtures_dir, dry_run=True):
         print(f"\n{len(to_remove)}개 fixture 삭제 완료.")
 
 
+def resolve_fixtures(fixtures_dir, dry_run=True):
+    """open fixture 중 품질 문제가 없는 것을 resolved로 전환.
+
+    판단 기준 (Python 측 시뮬레이션):
+    1. corrected 케이스가 있으면 → 테스트 통과 여부를 알 수 없으므로 건너뜀
+       (xcodebuild test 통과 후 수동 확인 필요)
+    2. corrected 케이스가 없고, 품질 검사(노이즈/중복/코드펜스)에 문제 없으면 → resolved 가능
+
+    실제로 corrected 케이스의 어댑터 검증은 Swift 테스트만 가능하므로,
+    이 명령은 'xcodebuild test 통과 후' 실행하는 것을 전제로 한다.
+    """
+    if not os.path.isdir(fixtures_dir):
+        print(f"Fixtures 디렉토리가 없습니다: {fixtures_dir}")
+        return
+
+    files = sorted(Path(fixtures_dir).glob("fixture_*.json"))
+    if not files:
+        print("fixture 파일이 없습니다.")
+        return
+
+    resolvable = []
+    skipped = []
+
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            continue
+
+        meta = data.get("metadata", {})
+        status = meta.get("status", "open")
+        if status != "open":
+            continue
+
+        cases = data.get("cases", [])
+        has_corrected = any(c.get("corrected") for c in cases)
+
+        # 품질 검사: Python에서 할 수 있는 것만
+        quality_issues = []
+        for c in cases:
+            clean = c.get("expectedCleanText", "")
+
+            # TUI 노이즈 검사
+            for pattern in TUI_NOISE_PATTERNS:
+                if pattern.search(clean):
+                    quality_issues.append(f"TUI 노이즈: {pattern.pattern[:30]}")
+                    break
+
+            # 중복 검사
+            if len(clean) > MIN_SENTENCE_LEN * 2:
+                dupes = detect_duplicated_sentences(clean)
+                if dupes:
+                    quality_issues.append(f"중복 {len(dupes)}건")
+
+            # 코드 펜스 검사
+            fence_count = clean.count("```")
+            if fence_count > 0 and fence_count % 2 != 0:
+                quality_issues.append(f"코드 펜스 미닫힘 ({fence_count}개)")
+
+        if quality_issues:
+            skipped.append((f, quality_issues))
+        elif has_corrected:
+            # corrected가 있으면 Swift 테스트 통과를 확인해야 함
+            resolvable.append((f, data, "corrected 케이스 포함 — xcodebuild test 통과 전제"))
+        else:
+            resolvable.append((f, data, None))
+
+    # 결과 출력
+    print(f"\n{'='*60}")
+    print(f"  Fixture Resolve 검사")
+    print(f"{'='*60}\n")
+
+    if skipped:
+        print(f"  ⏭️  품질 문제로 건너뜀 ({len(skipped)}개):")
+        for f, issues in skipped:
+            print(f"     {f.name}: {', '.join(issues[:3])}")
+        print()
+
+    if not resolvable:
+        print("  resolve 가능한 fixture가 없습니다.\n")
+        return
+
+    print(f"  ✅ resolve 가능 ({len(resolvable)}개):")
+    for f, data, note in resolvable:
+        n_cases = len(data.get("cases", []))
+        note_str = f" ({note})" if note else ""
+        print(f"     {f.name} — {n_cases}건{note_str}")
+
+    if dry_run:
+        print(f"\n  실제 전환하려면: python3 tools/extract_fixtures.py --resolve --confirm")
+    else:
+        for f, data, _ in resolvable:
+            data["metadata"]["status"] = "resolved"
+            f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            print(f"  🟢 resolved: {f.name}")
+        print(f"\n  {len(resolvable)}개 fixture를 resolved로 전환했습니다.")
+
+    print(f"{'='*60}\n")
+
+
 def main():
     import argparse
 
@@ -775,10 +875,14 @@ def main():
   python3 tools/extract_fixtures.py --status            # 현황 확인
   python3 tools/extract_fixtures.py --cleanup           # 정리 대상 확인
   python3 tools/extract_fixtures.py --cleanup --confirm # 실제 삭제
+  python3 tools/extract_fixtures.py --resolve           # resolve 가능 확인
+  python3 tools/extract_fixtures.py --resolve --confirm # 실제 전환
 
 fixture 라이프사이클:
-  🔴 open     — 추출 직후. expectedCleanText 교정 + 어댑터 수정 필요.
-  🟢 resolved — 어댑터 수정 완료. 회귀 방지용 영구 보관.
+  🔴 open     → 추출 직후. 품질 테스트가 문제 감지 시 실패.
+  🔴 open     → expectedCleanText 교정 + corrected: true → 어댑터 수정 시까지 실패.
+  🟢 resolved → xcodebuild test 통과 후 --resolve로 전환. 영구 보관 (회귀 방지).
+  🗑️ cleanup  → 같은 어댑터에 resolved 3개 이상이면 --cleanup으로 정리.
         """,
     )
     parser.add_argument("logfile", nargs="?", default=None,
@@ -804,16 +908,20 @@ fixture 라이프사이클:
                         help="fixture 현황 대시보드 출력")
     parser.add_argument("--cleanup", action="store_true",
                         help="resolved 중복 fixture 정리 (dry-run)")
+    parser.add_argument("--resolve", action="store_true",
+                        help="open fixture 중 품질 문제 없는 것을 resolved로 전환 (dry-run)")
     parser.add_argument("--confirm", action="store_true",
-                        help="--cleanup과 함께 사용 — 실제 삭제 실행")
+                        help="--cleanup/--resolve과 함께 사용 — 실제 실행")
 
     args = parser.parse_args()
 
     # fixture 관리 명령은 로그 스캔 없이 바로 실행
-    if args.status or args.cleanup:
+    if args.status or args.cleanup or args.resolve:
         fixtures_dir = args.output_dir
         if args.status:
             show_fixture_status(fixtures_dir)
+        if args.resolve:
+            resolve_fixtures(fixtures_dir, dry_run=not args.confirm)
         if args.cleanup:
             cleanup_fixtures(fixtures_dir, dry_run=not args.confirm)
         sys.exit(0)

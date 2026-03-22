@@ -184,6 +184,18 @@ final class RegressionTests: XCTestCase {
             let report = failures.map { "[\($0.file)] \($0.caseId):\n\($0.message)" }
                 .joined(separator: "\n\n")
             XCTFail("교정된 fixture 회귀 실패 \(failures.count)건:\n\n\(report)")
+        } else if totalCorrected > 0 {
+            // 모든 교정 케이스 통과 → resolve 대상 안내
+            let openFiles = urls.compactMap { url -> String? in
+                guard let fixture = try? loadFixture(url: url) else { return nil }
+                let status = fixture.metadata.status ?? "open"
+                let hasCorrected = fixture.cases.contains { $0.corrected == true }
+                return (status == "open" && hasCorrected) ? url.lastPathComponent : nil
+            }
+            if !openFiles.isEmpty {
+                print("[RegressionTests] 💡 resolve 가능: \(openFiles.joined(separator: ", "))")
+                print("[RegressionTests]    → python3 tools/extract_fixtures.py --resolve")
+            }
         }
     }
 
