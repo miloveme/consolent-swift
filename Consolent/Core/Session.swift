@@ -208,6 +208,11 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
         // CLI 초기화 완료 대기 (프롬프트 출현)
         try await waitForReady(timeout: 30)
+
+        // 디버그 로깅: 세션 시작
+        DebugLogger.shared.startSession(sessionId: id,
+                                         cliType: config.cliType.rawValue,
+                                         name: name)
     }
 
     /// 메시지를 보내고 응답을 기다린다 (동기 방식).
@@ -232,6 +237,10 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
             parser.completionMode = .contentCheck
             parser.idleTimeout = 1.0
             parser.startMonitoring()
+
+            // 디버그 로깅: 메시지 전송
+            DebugLogger.shared.logMessageSent(sessionId: id, messageId: messageId,
+                                               text: text, streaming: false)
 
             do {
                 try ptyProcess.write(text)
@@ -283,6 +292,12 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         let currentScreen = readHeadlessBuffer()
         streamBaselineText = adapter.cleanResponse(currentScreen)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 디버그 로깅: 스트리밍 메시지 전송 + baseline
+        DebugLogger.shared.logMessageSent(sessionId: id, messageId: messageId,
+                                           text: text, streaming: true)
+        DebugLogger.shared.logStreamingBaseline(sessionId: id,
+                                                 baseline: streamBaselineText ?? "")
 
         // 파서 모니터링 시작
         parser.completionMode = .contentCheck
@@ -350,6 +365,7 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
     /// 세션을 종료한다.
     func stop() {
+        DebugLogger.shared.endSession(sessionId: id)
         parser.stopMonitoring()
 
         // CLI에 종료 명령 시도
@@ -457,6 +473,12 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         // 응답 수집 중이면 현재 응답 버퍼에도 추가
         if responseContinuation != nil || streamContinuation != nil {
             currentResponseBuffer.append(data)
+
+            // 디버그 로깅: 응답 수집 중 PTY 출력
+            DebugLogger.shared.logPTYOutput(
+                sessionId: id, rawData: data,
+                strippedText: String(data: data, encoding: .utf8)
+            )
         }
 
         // Headless 터미널에 피드 (ANSI 해석)
@@ -474,10 +496,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private func completeResponse(signal: OutputParser.CompletionSignal) {
         guard let continuation = responseContinuation else {
             print("[Session] ⚠️ completeResponse: no continuation! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no continuation",
+                                         context: "completeResponse signal=\(signal)")
             return
         }
         guard let messageId = currentMessageId else {
             print("[Session] ⚠️ completeResponse: no messageId! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no messageId",
+                                         context: "completeResponse signal=\(signal)")
             return
         }
 
@@ -492,20 +518,26 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         var cleanText = adapter.cleanResponse(screenText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // 디버그 로깅: 파싱 결과 (cleanResponse 전후)
+        DebugLogger.shared.logParsingResult(
+            sessionId: id, screenText: screenText, cleanText: cleanText,
+            adapterType: adapter.modelId, context: "completeResponse"
+        )
+        DebugLogger.shared.logCompletionDetected(
+            sessionId: id, signal: "\(signal)", screenText: screenText,
+            cleanText: cleanText, context: "completeResponse"
+        )
+
         // 빈 응답일 때 에러 감지 — TUI chrome 필터가 걸러낸 에러 메시지 복구
         if cleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
             cleanText = errorMsg
         }
 
-        // 디버그: 빈 응답일 때 screen buffer 로그
+        // 빈 응답일 때 콘솔 경고
         if cleanText.isEmpty {
             print("[Session] ⚠️ Empty cleanText. Signal: \(signal)")
-            let debugLines = screenText.components(separatedBy: "\n")
-                .enumerated()
-                .filter { !$0.element.trimmingCharacters(in: .whitespaces).isEmpty }
-                .map { "  [\($0.offset)] \($0.element)" }
-                .joined(separator: "\n")
-            print("[Session] screenText (non-empty lines):\n\(debugLines)")
+            DebugLogger.shared.logError(sessionId: id, message: "빈 응답",
+                                         context: "completeResponse signal=\(signal)")
         }
 
         let filesChanged = OutputParser.extractChangedFiles(from: rawText)
@@ -581,21 +613,18 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
 
         let currentLength = cleanText.count
 
-        // 디버그 로깅: 스트리밍 폴링 상태 (처음 60초간, 5초마다)
-        #if DEBUG
-        if let start = messageStartTime {
+        // 디버그 로깅: 스트리밍 폴링 상태 (빈 응답 대기 중일 때)
+        if DebugLogger.shared.isEnabled, cleanText.isEmpty, streamSentLength == 0,
+           let start = messageStartTime {
             let elapsed = Date().timeIntervalSince(start)
-            if elapsed < 60, Int(elapsed * 5) % 5 == 0 {
-                let bufferLines = screenText.components(separatedBy: "\n").count
-                let hasClaudeMarker = screenText.contains("⏺")
-                let hasGeminiMarker = screenText.contains("✦")
-                let hasCodexMarker = screenText.contains("•")
-                if cleanText.isEmpty && streamSentLength == 0 {
-                    print("[Stream] poll \(String(format: "%.1f", elapsed))s: buffer=\(bufferLines)행, ⏺=\(hasClaudeMarker), ✦=\(hasGeminiMarker), •=\(hasCodexMarker), clean=\"\" (대기 중)")
-                }
+            // 5초마다 기록 (너무 빈번한 로깅 방지)
+            if Int(elapsed) % 5 == 0, Int(elapsed) > 0 {
+                DebugLogger.shared.logScreenBuffer(
+                    sessionId: id, screenText: screenText,
+                    context: "streaming_poll_waiting_\(String(format: "%.0f", elapsed))s"
+                )
             }
         }
-        #endif
 
         // 이전 턴 응답이 그대로 반환된 경우 스킵 (Codex backup/restore 등).
         // baseline과 동일하면 아직 새 응답이 시작되지 않은 것.
@@ -603,9 +632,6 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         if let baseline = streamBaselineText, !baseline.isEmpty {
             let trimmedClean = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedClean == baseline && streamSentLength == 0 {
-                #if DEBUG
-                print("[Stream] baseline 일치 → 이전 턴 응답 스킵")
-                #endif
                 return
             } else if trimmedClean != baseline {
                 // 내용이 변경됨 → baseline 클리어
@@ -623,22 +649,28 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         continuation.yield(.delta(delta))
         streamSentLength = currentLength
 
-        #if DEBUG
-        if let start = messageStartTime {
+        // 디버그 로깅: delta 전송
+        if DebugLogger.shared.isEnabled, let start = messageStartTime {
             let elapsed = Date().timeIntervalSince(start)
-            print("[Stream] delta \(String(format: "%.1f", elapsed))s: +\(delta.count)자 (total=\(currentLength))")
+            DebugLogger.shared.logStreamingPoll(
+                sessionId: id, cleanText: cleanText, delta: delta,
+                sentLength: streamSentLength, totalLength: currentLength, elapsed: elapsed
+            )
         }
-        #endif
     }
 
     /// 스트리밍 응답 완료 핸들러.
     private func completeStreamingResponse(signal: OutputParser.CompletionSignal) {
         guard let continuation = streamContinuation else {
             print("[Session] ⚠️ completeStreamingResponse: no streamContinuation! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no streamContinuation",
+                                         context: "completeStreamingResponse signal=\(signal)")
             return
         }
         guard let messageId = currentMessageId else {
             print("[Session] ⚠️ completeStreamingResponse: no messageId! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no messageId",
+                                         context: "completeStreamingResponse signal=\(signal)")
             return
         }
 
@@ -655,9 +687,21 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         var fullCleanText = adapter.cleanResponse(screenText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // 디버그 로깅: 스트리밍 완료 파싱 결과
+        DebugLogger.shared.logParsingResult(
+            sessionId: id, screenText: screenText, cleanText: fullCleanText,
+            adapterType: adapter.modelId, context: "completeStreamingResponse"
+        )
+        DebugLogger.shared.logCompletionDetected(
+            sessionId: id, signal: "\(signal)", screenText: screenText,
+            cleanText: fullCleanText, context: "completeStreamingResponse"
+        )
+
         // 빈 응답일 때 에러 감지
         if fullCleanText.isEmpty, let errorMsg = adapter.detectError(screenText) {
             fullCleanText = errorMsg
+            DebugLogger.shared.logError(sessionId: id, message: "스트리밍 빈 응답",
+                                         context: "completeStreamingResponse signal=\(signal)")
         }
 
         // 최종 잔여분 전송 — 스트리밍 노이즈 필터 적용 (pollStreamingDelta와 동일 기준)

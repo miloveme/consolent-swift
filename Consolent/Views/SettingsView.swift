@@ -20,6 +20,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showKeyRegenConfirm = false
+    @State private var showLogCleanupConfirm = false
     @State private var selectedTab = 0
 
     var body: some View {
@@ -101,6 +102,63 @@ struct SettingsView: View {
                         Text("앱 시작 시 윈도우를 숨기고 메뉴바 아이콘만 표시합니다.")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            Section("로깅") {
+                Picker("로그 레벨", selection: $config.logLevel) {
+                    Text("OFF").tag("off")
+                    Text("FATAL — 에러만 기록").tag("fatal")
+                    Text("INFO — 파싱 결과, API 요청/응답").tag("info")
+                    Text("DEBUG — INFO + PTY 원본 출력").tag("debug")
+                }
+                .pickerStyle(.menu)
+
+                if config.logLevel != "off" {
+                    LabeledContent("로그 보관 기간") {
+                        HStack {
+                            TextField("", value: $config.debugLogRetentionDays, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 60)
+                            Text("일")
+                        }
+                    }
+
+                    LabeledContent("파일 최대 크기") {
+                        HStack {
+                            TextField("", value: $config.debugLogMaxFileSizeMB, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 60)
+                            Text("MB (초과 시 분할)")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    }
+
+                    LabeledContent("로그 위치") {
+                        Text(DebugLogger.logDirectory.path)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    HStack {
+                        Button("로그 폴더 열기") {
+                            NSWorkspace.shared.open(DebugLogger.logDirectory)
+                        }
+                        Button("오래된 로그 정리") {
+                            showLogCleanupConfirm = true
+                        }
+                        .alert("\(config.debugLogRetentionDays)일 이전 로그를 삭제하시겠습니까?",
+                               isPresented: $showLogCleanupConfirm) {
+                            Button("취소", role: .cancel) {}
+                            Button("삭제", role: .destructive) {
+                                DebugLogger.shared.cleanupOldLogs()
+                            }
+                        } message: {
+                            Text("삭제된 로그는 복구할 수 없습니다.")
+                        }
                     }
                 }
             }
