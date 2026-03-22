@@ -106,26 +106,15 @@ struct SettingsView: View {
                 }
             }
 
-            Section("디버그 로깅") {
-                Toggle(isOn: $config.debugLoggingEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("디버그 로깅")
-                        Text("PTY 원본 출력, 파싱 과정, API 요청/응답을 JSON-Lines 형식으로 기록합니다.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+            Section("로깅") {
+                Picker("로그 레벨", selection: $config.logLevel) {
+                    Text("OFF").tag("off")
+                    Text("INFO — 파싱 결과, API 요청/응답").tag("info")
+                    Text("DEBUG — INFO + PTY 원본 출력").tag("debug")
                 }
+                .pickerStyle(.radioGroup)
 
-                if config.debugLoggingEnabled {
-                    Toggle(isOn: $config.debugLogRawPTY) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("PTY 원본 출력 기록")
-                            Text("Base64 인코딩된 원본 데이터를 포함합니다. 용량이 크게 증가합니다.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
+                if config.logLevel != "off" {
                     LabeledContent("로그 보관 기간") {
                         HStack {
                             TextField("", value: $config.debugLogRetentionDays, formatter: NumberFormatter.plain)

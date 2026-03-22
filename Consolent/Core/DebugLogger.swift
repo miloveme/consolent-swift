@@ -1,16 +1,32 @@
 import Foundation
 
 /// 디버그 로깅 시스템.
-/// PTY 원본 출력, 파싱 과정, API 요청/응답을 JSON-Lines 형식으로 기록한다.
-/// 기록된 데이터는 나중에 파싱 엔진 테스트에 사용할 수 있다.
+/// 로그 레벨에 따라 기록 범위가 달라진다.
+/// - OFF: 로깅 없음
+/// - INFO: 파싱 결과, API 요청/응답, 스트리밍 delta, 완료 감지
+/// - DEBUG: INFO + PTY 원본 출력 (Base64)
 ///
 /// 로그 위치: `~/Library/Logs/Consolent/debug/{날짜}/{세션파일}.jsonl`
 final class DebugLogger {
 
+    enum LogLevel: String, Comparable {
+        case off, info, debug
+
+        static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
+            let order: [LogLevel] = [.off, .info, .debug]
+            return order.firstIndex(of: lhs)! < order.firstIndex(of: rhs)!
+        }
+    }
+
     static let shared = DebugLogger()
 
-    /// 로깅 활성 여부 (AppConfig.debugLoggingEnabled와 연동)
-    var isEnabled: Bool { AppConfig.shared.debugLoggingEnabled }
+    /// 현재 로그 레벨
+    var level: LogLevel {
+        LogLevel(rawValue: AppConfig.shared.logLevel) ?? .off
+    }
+
+    /// INFO 이상 로깅 활성 여부
+    var isEnabled: Bool { level >= .info }
 
     /// 로그 보관 기간 (일)
     var retentionDays: Int { AppConfig.shared.debugLogRetentionDays }
@@ -81,9 +97,9 @@ final class DebugLogger {
 
     // MARK: - 로깅 메서드
 
-    /// PTY 원본 출력 (handleOutput에서 호출, debugLogRawPTY ON 시만 기록)
+    /// PTY 원본 출력 (handleOutput에서 호출, DEBUG 레벨에서만 기록)
     func logPTYOutput(sessionId: String, rawData: Data, strippedText: String?) {
-        guard isEnabled, AppConfig.shared.debugLogRawPTY else { return }
+        guard level >= .debug else { return }
         writeEntry(sessionId: sessionId, event: "pty_output", data: [
             "rawBase64": rawData.base64EncodedString(),
             "rawLength": rawData.count,
