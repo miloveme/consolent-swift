@@ -20,6 +20,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showKeyRegenConfirm = false
+    @State private var showLogCleanupConfirm = false
     @State private var selectedTab = 0
 
     var body: some View {
@@ -137,7 +138,16 @@ struct SettingsView: View {
                             NSWorkspace.shared.open(DebugLogger.logDirectory)
                         }
                         Button("오래된 로그 정리") {
-                            DebugLogger.shared.cleanupOldLogs()
+                            showLogCleanupConfirm = true
+                        }
+                        .alert("\(config.debugLogRetentionDays)일 이전 로그를 삭제하시겠습니까?",
+                               isPresented: $showLogCleanupConfirm) {
+                            Button("취소", role: .cancel) {}
+                            Button("삭제", role: .destructive) {
+                                DebugLogger.shared.cleanupOldLogs()
+                            }
+                        } message: {
+                            Text("삭제된 로그는 복구할 수 없습니다.")
                         }
                     }
                 }
