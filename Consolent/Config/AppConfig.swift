@@ -51,6 +51,11 @@ final class AppConfig: ObservableObject, Codable {
     /// 긴 응답의 마커(⏺/✦)가 화면에 남도록 충분히 큰 값을 설정한다.
     @Published var headlessTerminalRows: Int = 500
 
+    // MARK: - App Behavior
+
+    /// 시작 시 메뉴바 모드로 실행 (윈도우 숨김)
+    @Published var launchToMenuBar: Bool = false
+
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
@@ -58,6 +63,7 @@ final class AppConfig: ObservableObject, Codable {
         case maxConcurrentSessions, sessionIdleTimeout, outputBufferMB
         case defaultCliType, claudePath, defaultCwd, cwdPerCliType, defaultShell, promptPattern
         case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
+        case launchToMenuBar
     }
 
     /// 자동 저장 구독. Published 속성 변경 시 JSON 파일에 저장한다.
@@ -91,6 +97,7 @@ final class AppConfig: ObservableObject, Codable {
         theme = try c.decodeIfPresent(String.self, forKey: .theme) ?? "dark"
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 1000
         headlessTerminalRows = try c.decodeIfPresent(Int.self, forKey: .headlessTerminalRows) ?? 500
+        launchToMenuBar = try c.decodeIfPresent(Bool.self, forKey: .launchToMenuBar) ?? false
         setupAutoSave()
     }
 
@@ -115,6 +122,7 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(theme, forKey: .theme)
         try c.encode(scrollbackLines, forKey: .scrollbackLines)
         try c.encode(headlessTerminalRows, forKey: .headlessTerminalRows)
+        try c.encode(launchToMenuBar, forKey: .launchToMenuBar)
     }
 
     /// Published 속성 변경 시 자동으로 JSON 파일에 저장.

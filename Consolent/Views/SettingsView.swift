@@ -94,6 +94,17 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
             
+            Section("앱 동작") {
+                Toggle(isOn: $config.launchToMenuBar) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("메뉴바 모드로 시작")
+                        Text("앱 시작 시 윈도우를 숨기고 메뉴바 아이콘만 표시합니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Section("리소스 제한") {
                 LabeledContent("최대 동시 세션") {
                     HStack {
