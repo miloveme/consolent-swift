@@ -473,36 +473,91 @@ python3 tools/extract_fixtures.py [옵션] [로그파일]
 
 ---
 
-## 일상 워크플로우
+## 빌드 & 테스트
 
-### 매일 (또는 문제 발생 시)
-
-```bash
-# 1. 현황 확인 — 미처리 로그, 만료 임박 경고 확인
-python3 tools/extract_fixtures.py --status
-
-# 2. 문제가 있는 로그에서 fixture 추출
-python3 tools/extract_fixtures.py --today
-
-# 3. (필요 시) 추출된 fixture의 expectedCleanText를 올바른 값으로 교정
-#    corrected: true 추가
-```
-
-### 어댑터 수정 후
+### 기본 명령
 
 ```bash
-# 4. 테스트 실행
+# 프로젝트 루트에서 실행 (Consolent/)
+
+# 빌드
+xcodebuild build -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+
+# 전체 테스트 (회귀 테스트 포함)
 xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
   -destination 'platform=macOS,arch=arm64'
 
-# 5. 통과하면 resolved로 전환
+# 회귀 테스트만 실행
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:ConsolentTests/RegressionTests
+```
+
+> **주의**: `xcodebuild test`는 반드시 `-scheme Consolent`을 지정해야 한다.
+> 생략하면 `The test action requires that the name of a scheme...` 에러가 발생한다.
+
+### alias 설정 (선택)
+
+매번 긴 명령을 치기 번거로우면 shell에 alias를 추가:
+
+```bash
+# ~/.zshrc 또는 ~/.bashrc에 추가
+alias cb='xcodebuild build -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
+alias ct='xcodebuild test -project Consolent.xcodeproj -scheme Consolent -destination "platform=macOS,arch=arm64"'
+```
+
+이후 `cb`(빌드), `ct`(테스트)로 간단히 실행.
+
+---
+
+## 일상 워크플로우
+
+### 1. 현황 확인
+
+```bash
+python3 tools/extract_fixtures.py --status
+```
+
+미처리 로그, 만료 임박 경고, fixture 상태를 한눈에 확인.
+
+### 2. Fixture 추출
+
+```bash
+# 오늘 로그에서 문제 있는 케이스만 추출
+python3 tools/extract_fixtures.py --today
+```
+
+### 3. 테스트 실행
+
+```bash
+xcodebuild test -project Consolent.xcodeproj -scheme Consolent \
+  -destination 'platform=macOS,arch=arm64'
+```
+
+추출된 fixture에 품질 문제가 있으면 **자동으로 테스트가 실패**한다.
+(TUI 노이즈 잔존, 내용 중복, 코드 펜스 미닫힘, 스트리밍 불일치 등)
+
+### 4. 어댑터 수정
+
+테스트 실패 메시지를 보고 어댑터(`Consolent/Core/Adapters/`)를 수정.
+
+필요하면 fixture의 `expectedCleanText`를 올바른 기대값으로 교정하고 `"corrected": true`를 추가.
+→ `testCorrectedFixtures`가 정확한 값과 비교하여 실패/통과를 판단.
+
+### 5. Resolve 전환
+
+모든 테스트 통과 후:
+
+```bash
 python3 tools/extract_fixtures.py --resolve --confirm
 ```
 
-### 정기 정리
+### 6. 정기 정리
+
+resolved fixture가 쌓이면:
 
 ```bash
-# 6. resolved fixture가 쌓이면 정리
 python3 tools/extract_fixtures.py --cleanup --confirm
 ```
 
