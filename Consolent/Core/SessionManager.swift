@@ -46,16 +46,25 @@ final class SessionManager: ObservableObject {
         var finalConfig = config
         finalConfig.name = resolvedName
 
+        // 채널 모드: 포트 충돌 방지 (같은 포트를 사용하는 채널 세션이 있으면 자동 증가)
+        if finalConfig.channelEnabled {
+            var port = finalConfig.channelPort
+            while isChannelPortInUse(port) { port += 1 }
+            finalConfig.channelPort = port
+        }
+
         let session = Session(config: finalConfig)
 
         // 세션 상태 변화를 SessionManager의 objectWillChange로 전파.
         // DispatchQueue.main.async로 지연하여 SwiftUI 뷰 업데이트 중
         // "Publishing changes from within view updates" 경고를 방지한다.
+        // nonisolated(unsafe): Sendable 경고 방지 — MainActor 컨텍스트에서만 접근
+        nonisolated(unsafe) let weakSelf = self
         session.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
+            .sink { _ in
                 DispatchQueue.main.async {
-                    self?.objectWillChange.send()
+                    weakSelf.objectWillChange.send()
                 }
             }
             .store(in: &cancellables)
@@ -120,7 +129,9 @@ final class SessionManager: ObservableObject {
                 createdAt: session.createdAt,
                 lastActivity: Date(),
                 messageCount: session.messageCount,
-                tunnelUrl: session.tunnelURL
+                tunnelUrl: session.tunnelURL,
+                channelEnabled: session.isChannelMode,
+                channelUrl: session.channelServerURL
             )
         }.sorted { $0.createdAt < $1.createdAt }
     }
@@ -165,6 +176,15 @@ final class SessionManager: ObservableObject {
         sessions.removeValue(forKey: id)
     }
 
+    // MARK: - Channel Server
+
+    /// 해당 포트가 이미 채널 세션에서 사용 중인지 확인
+    func isChannelPortInUse(_ port: Int) -> Bool {
+        sessions.values.contains {
+            $0.status != .terminated && $0.isChannelMode && $0.config.channelPort == port
+        }
+    }
+
     // MARK: - Cloudflare Tunnel (세션별)
 
     func startTunnel(sessionId: String) {
@@ -192,6 +212,8 @@ struct SessionInfo: Codable {
     let lastActivity: Date
     let messageCount: Int
     var tunnelUrl: String?
+    var channelEnabled: Bool
+    var channelUrl: String?
 }
 
 // MARK: - Errors

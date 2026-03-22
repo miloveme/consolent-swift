@@ -123,7 +123,10 @@ final class APIServer: ObservableObject {
                 cliArgs: body.cliArgs ?? body.claudeArgs ?? [],
                 autoApprove: body.autoApprove ?? false,
                 idleTimeout: body.idleTimeout ?? AppConfig.shared.sessionIdleTimeout,
-                env: body.env
+                env: body.env,
+                channelEnabled: (cliType == .claudeCode) ? (body.channelEnabled ?? false) : false,
+                channelPort: body.channelPort ?? 8787,
+                channelServerName: body.channelServerName ?? "openai-compat"
             )
 
             let session = try await sessionManager.createSession(config: config)
@@ -138,7 +141,9 @@ final class APIServer: ObservableObject {
                 status: session.status,
                 createdAt: session.createdAt,
                 localUrl: localUrl,
-                tunnelUrl: session.tunnelURL  // 터널 준비 전이면 nil; GET /sessions/:id 로 재조회 가능
+                tunnelUrl: session.tunnelURL,  // 터널 준비 전이면 nil; GET /sessions/:id 로 재조회 가능
+                channelEnabled: session.isChannelMode,
+                channelUrl: session.channelServerURL
             )
 
             return try await response.encodeResponse(status: .created, for: req)
@@ -172,7 +177,9 @@ final class APIServer: ObservableObject {
                     uptimeSeconds: Int(Date().timeIntervalSince(session.createdAt))
                 ),
                 localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
-                tunnelUrl: session.tunnelURL
+                tunnelUrl: session.tunnelURL,
+                channelEnabled: session.isChannelMode,
+                channelUrl: session.channelServerURL
             )
         }
 
@@ -228,7 +235,9 @@ final class APIServer: ObservableObject {
                     uptimeSeconds: Int(Date().timeIntervalSince(session.createdAt))
                 ),
                 localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
-                tunnelUrl: session.tunnelURL
+                tunnelUrl: session.tunnelURL,
+                channelEnabled: session.isChannelMode,
+                channelUrl: session.channelServerURL
             )
         }
 
@@ -340,7 +349,7 @@ final class APIServer: ObservableObject {
                         id: info.name,
                         object: "model",
                         created: Int(info.createdAt.timeIntervalSince1970),
-                        ownedBy: "consolent"
+                        ownedBy: info.channelEnabled ? "channel" : "consolent"
                     )
                 }
                 return OpenAIModelsResponse(object: "list", data: models)
@@ -526,10 +535,16 @@ final class APIServer: ObservableObject {
 
     /// OpenAI 호환 API용 세션 해결.
     /// model 필드가 있으면 세션 이름으로 매칭, 없으면 기존 폴백 로직 사용.
+    /// 채널 모드 세션은 Consolent API 라우팅에서 제외 — 채널 서버 URL로 안내.
     private func resolveSession(model: String?) async throws -> Session {
         // model 필드로 세션 이름 매칭
         if let model = model, !model.isEmpty {
             if let session = sessionManager.getSession(name: model) {
+                // 채널 모드 세션은 Consolent API에서 처리하지 않음
+                if session.isChannelMode {
+                    let channelUrl = session.channelServerURL ?? "http://localhost:\(session.config.channelPort)"
+                    throw Abort(.gone, reason: "Session '\(model)' is in channel mode. Send requests directly to \(channelUrl)/v1")
+                }
                 guard session.status == .ready else {
                     throw Abort(.conflict, reason: "Session '\(model)' exists but is not ready (status: \(session.status.rawValue))")
                 }
@@ -544,21 +559,23 @@ final class APIServer: ObservableObject {
 
     /// 기본 세션 폴백.
     /// 우선순위: 고정된 세션 → 앱에서 선택된 세션 → 아무 ready 세션 → 에러
+    /// 채널 모드 세션은 폴백 대상에서 제외.
     private func getOrCreateDefaultSession() async throws -> Session {
-        // 1. 이전에 고정된 세션이 ready면 계속 사용 (대화 컨텍스트 유지)
+        // 1. 이전에 고정된 세션이 ready + 비채널이면 계속 사용 (대화 컨텍스트 유지)
         if let id = defaultSessionId, let session = sessionManager.getSession(id: id),
-           session.status == .ready {
+           session.status == .ready, !session.isChannelMode {
             return session
         }
 
-        // 2. 앱에서 현재 선택된 세션이 ready면 사용
-        if let selected = sessionManager.selectedSession, selected.status == .ready {
+        // 2. 앱에서 현재 선택된 세션이 ready + 비채널이면 사용
+        if let selected = sessionManager.selectedSession,
+           selected.status == .ready, !selected.isChannelMode {
             defaultSessionId = selected.id
             return selected
         }
 
-        // 3. 아무 ready 세션이라도 사용
-        let readySessions = sessionManager.listSessions().filter { $0.status == .ready }
+        // 3. 아무 ready + 비채널 세션이라도 사용
+        let readySessions = sessionManager.listSessions().filter { $0.status == .ready && !$0.channelEnabled }
         if let first = readySessions.first,
            let session = sessionManager.getSession(id: first.id) {
             defaultSessionId = session.id
@@ -665,6 +682,9 @@ struct CreateSessionRequest: Content {
     var autoApprove: Bool?
     var idleTimeout: Int?
     var env: [String: String]?
+    var channelEnabled: Bool?         // 채널 서버 모드 (Claude Code 전용)
+    var channelPort: Int?             // 채널 서버 포트 (기본 8787)
+    var channelServerName: String?    // MCP 서버 이름 (기본 "openai-compat")
 }
 
 struct CreateSessionResponse: Content {
@@ -674,6 +694,8 @@ struct CreateSessionResponse: Content {
     let createdAt: Date
     let localUrl: String
     let tunnelUrl: String?
+    let channelEnabled: Bool
+    let channelUrl: String?      // 채널 모드 활성 시 채널 서버 URL
 }
 
 struct UpdateSessionRequest: Content {
@@ -689,6 +711,8 @@ struct SessionStatusResponse: Content {
     let stats: SessionStats
     let localUrl: String
     let tunnelUrl: String?
+    let channelEnabled: Bool
+    let channelUrl: String?      // 채널 모드 활성 시 채널 서버 URL
 }
 
 struct SessionStats: Content {

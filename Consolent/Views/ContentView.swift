@@ -14,6 +14,13 @@ struct ContentView: View {
     @State private var newSessionCwd = ""
     @State private var newSessionCliType: CLIType = .claudeCode
     @State private var newSessionAutoApprove = true
+    @State private var newSessionChannelEnabled = false
+    @State private var newSessionChannelPort = 8787
+    @State private var newSessionChannelServerName = "openai-compat"
+    @State private var channelConfigFound = false
+    @State private var channelConfigError = ""
+    @State private var channelConfigInstalled = false  // Install 완료 후 Undo 표시용
+    @State private var channelConfigApiKeyMissing = false  // API 키 미설정
 
     /// 현재 이름이 CLI 기본값(claude-code, gemini, codex)이면 false → 타입 변경 시 자동 업데이트
     private var isSessionNameCustomized: Bool {
@@ -43,6 +50,13 @@ struct ContentView: View {
                     newSessionName = config.defaultCliType.rawValue
                     newSessionCwd = config.cwd(for: config.defaultCliType)
                     newSessionAutoApprove = true
+                    newSessionChannelEnabled = false
+                    newSessionChannelPort = 8787
+                    newSessionChannelServerName = "openai-compat"
+                    channelConfigFound = false
+                    channelConfigError = ""
+                    channelConfigInstalled = false
+                    channelConfigApiKeyMissing = false
                 }
         }
     }
@@ -176,6 +190,17 @@ struct ContentView: View {
                         .monospacedDigit()
                 }
 
+                if session.isChannelMode, let channelUrl = session.channelServerURL {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.horizontal")
+                            .foregroundColor(.purple)
+                        Text(channelUrl)
+                            .font(.caption)
+                            .foregroundColor(.purple)
+                            .lineLimit(1)
+                    }
+                }
+
                 if let approval = session.pendingApproval {
                     HStack(spacing: 8) {
                         Text("권한 요청됨")
@@ -278,6 +303,10 @@ struct ContentView: View {
                         }
                         // 작업 디렉토리도 CLI 타입별 설정으로 변경
                         newSessionCwd = config.cwd(for: newType)
+                        // 채널 서버는 Claude Code 전용
+                        if newType != .claudeCode {
+                            newSessionChannelEnabled = false
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -314,10 +343,125 @@ struct ContentView: View {
                         }
                     }
                     .padding(.top, 8)
+
+                    // 채널 서버 설정 (Claude Code 전용)
+                    if newSessionCliType == .claudeCode {
+                        Toggle(isOn: $newSessionChannelEnabled) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Channel Server")
+                                Text("MCP 채널 서버 활성화 — API 요청이 채널 서버로 직접 전달됩니다.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .onChange(of: newSessionChannelEnabled) { _, enabled in
+                            if enabled {
+                                detectChannelConfig()
+                            } else {
+                                channelConfigFound = false
+                                channelConfigError = ""
+                                channelConfigApiKeyMissing = false
+                            }
+                        }
+
+                        if newSessionChannelEnabled {
+                            Text("WARNING: Loading development channels")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundColor(.red)
+
+                            if channelConfigFound {
+                                // 설정 감지 성공
+                                HStack {
+                                    Text("서버 이름")
+                                    Spacer()
+                                    Text(newSessionChannelServerName)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                HStack {
+                                    Text("채널 포트")
+                                    Spacer()
+                                    Text(String(newSessionChannelPort))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                HStack {
+                                    Label("~/.claude.json에서 설정을 자동으로 감지했습니다.",
+                                          systemImage: "checkmark.circle")
+                                        .font(.caption)
+                                        .foregroundColor(.green)
+
+                                    Spacer()
+
+                                    if channelConfigInstalled {
+                                        Button(action: { undoChannelConfig() }) {
+                                            Label("Undo", systemImage: "arrow.uturn.backward")
+                                        }
+                                        .controlSize(.small)
+                                    }
+                                }
+
+                                // API 키 미설정 경고
+                                if channelConfigApiKeyMissing {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Label("OPENAI_COMPAT_API_KEY가 설정되지 않았습니다.",
+                                              systemImage: "key")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+
+                                        HStack {
+                                            Text(AppConfig.shared.apiKey)
+                                                .font(.system(.caption, design: .monospaced))
+                                                .foregroundColor(.secondary)
+                                                .textSelection(.enabled)
+
+                                            Spacer()
+
+                                            Button(action: { applyChannelApiKey() }) {
+                                                Label("API key 적용", systemImage: "key.fill")
+                                            }
+                                            .controlSize(.small)
+                                        }
+                                    }
+                                }
+                            } else {
+                                // 설정 없음 — 에러 메시지 + Install 버튼
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Label(channelConfigError, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+
+                                    Text("~/.claude.json mcpServers에 아래 설정이 필요합니다:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+
+                                    Text("""
+                                    "\(newSessionChannelServerName)": {
+                                      "command": "npx",
+                                      "args": ["-y", "@miloveme/claude-code-api@latest"]
+                                    }
+                                    """)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.orange)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.orange.opacity(0.08))
+                                    .cornerRadius(6)
+
+                                    Button(action: { installChannelConfig() }) {
+                                        Label("Install", systemImage: "square.and.arrow.down")
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)
-            .scrollDisabled(true)
+            .scrollDisabled(!newSessionChannelEnabled)
 
             // Bottom Actions
             HStack {
@@ -339,20 +483,23 @@ struct ContentView: View {
                             workingDirectory: newSessionCwd.isEmpty ? config.defaultCwd : newSessionCwd,
                             shell: config.defaultShell,
                             cliType: newSessionCliType,
-                            autoApprove: newSessionAutoApprove
+                            autoApprove: newSessionAutoApprove,
+                            channelEnabled: newSessionCliType == .claudeCode ? newSessionChannelEnabled : false,
+                            channelPort: newSessionChannelPort,
+                            channelServerName: newSessionChannelServerName
                         )
                         _ = try? await sessionManager.createSession(config: sessionConfig)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isNewSessionNameDuplicate)
+                .disabled(isNewSessionNameDuplicate || (newSessionChannelEnabled && !channelConfigFound))
             }
             .padding(24)
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(Divider(), alignment: .top)
         }
-        .frame(width: 450, height: 420)
+        .frame(width: 450, height: newSessionChannelEnabled ? 540 : 420)
     }
 
     /// 세션 이름 중복 여부 (입력 중 실시간 체크)
@@ -360,6 +507,158 @@ struct ContentView: View {
         let name = newSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         return sessionManager.isNameTaken(name)
+    }
+
+    // MARK: - Channel Config Detection
+
+    /// ~/.claude.json에서 @miloveme/claude-code-api 설정을 자동 감지하여
+    /// 서버 이름과 포트를 채운다.
+    private func detectChannelConfig() {
+        let claudeJsonPath = NSHomeDirectory() + "/.claude.json"
+        guard let data = FileManager.default.contents(atPath: claudeJsonPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let mcpServers = json["mcpServers"] as? [String: Any] else {
+            channelConfigFound = false
+            channelConfigError = "~/.claude.json 파일이 없거나 mcpServers 설정이 없습니다."
+            return
+        }
+
+        // mcpServers에서 @miloveme/claude-code-api를 사용하는 항목 찾기
+        for (name, value) in mcpServers {
+            guard let serverConfig = value as? [String: Any],
+                  let command = serverConfig["command"] as? String, command == "npx",
+                  let args = serverConfig["args"] as? [String],
+                  args.contains(where: { $0.hasPrefix("@miloveme/claude-code-api") }) else {
+                continue
+            }
+
+            // 감지 성공 — 서버 이름 자동 설정
+            newSessionChannelServerName = name
+
+            // env에서 포트 및 API 키 가져오기
+            let env = serverConfig["env"] as? [String: Any] ?? [:]
+            if let portStr = env["OPENAI_COMPAT_PORT"] as? String,
+               let port = Int(portStr) {
+                newSessionChannelPort = port
+            } else {
+                newSessionChannelPort = 8787
+            }
+
+            // API 키 확인
+            let hasApiKey = env["OPENAI_COMPAT_API_KEY"] as? String
+            channelConfigApiKeyMissing = (hasApiKey == nil || hasApiKey!.isEmpty)
+
+            channelConfigFound = true
+            channelConfigError = ""
+            return
+        }
+
+        channelConfigFound = false
+        channelConfigError = "mcpServers에 @miloveme/claude-code-api 설정이 없습니다."
+    }
+
+    /// ~/.claude.json의 mcpServers에 채널 서버 설정을 추가한다.
+    /// 1. 기존 파일을 .claude.json.bk로 백업
+    /// 2. JSON 전체를 파싱 → mcpServers에 항목 추가 → 전체 재작성
+    private func installChannelConfig() {
+        let home = NSHomeDirectory()
+        let claudeJsonPath = home + "/.claude.json"
+        let backupPath = home + "/.claude.json.bk"
+        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
+        let backupUrl = URL(fileURLWithPath: backupPath)
+        let fm = FileManager.default
+        let serverName = newSessionChannelServerName
+
+        // 1. 기존 파일 백업
+        if fm.fileExists(atPath: claudeJsonPath) {
+            try? fm.removeItem(at: backupUrl)
+            try? fm.copyItem(at: fileUrl, to: backupUrl)
+        }
+
+        // 2. 같은 파일에서 기존 JSON 전체 읽기
+        var root: [String: Any]
+        if let data = fm.contents(atPath: claudeJsonPath),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = parsed
+        } else {
+            root = [:]
+        }
+
+        // 3. mcpServers에 항목 추가 (기존 항목 보존, API 키 포함)
+        let apiKey = AppConfig.shared.apiKey
+        var mcpServers = root["mcpServers"] as? [String: Any] ?? [:]
+        mcpServers[serverName] = [
+            "command": "npx",
+            "args": ["-y", "@miloveme/claude-code-api@latest"],
+            "env": [
+                "OPENAI_COMPAT_API_KEY": apiKey
+            ]
+        ] as [String: Any]
+        root["mcpServers"] = mcpServers
+
+        // 4. 같은 파일에 전체 JSON 재작성
+        if let outData = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
+            try? outData.write(to: fileUrl)
+        }
+
+        channelConfigInstalled = true
+
+        // 5. 재감지
+        detectChannelConfig()
+    }
+
+    /// 기존 mcpServers 설정에 API 키만 추가한다.
+    private func applyChannelApiKey() {
+        let home = NSHomeDirectory()
+        let claudeJsonPath = home + "/.claude.json"
+        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
+        let backupUrl = URL(fileURLWithPath: home + "/.claude.json.bk")
+        let fm = FileManager.default
+
+        guard let data = fm.contents(atPath: claudeJsonPath),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var mcpServers = root["mcpServers"] as? [String: Any],
+              var serverConfig = mcpServers[newSessionChannelServerName] as? [String: Any] else {
+            return
+        }
+
+        // 백업
+        try? fm.removeItem(at: backupUrl)
+        try? fm.copyItem(at: fileUrl, to: backupUrl)
+
+        // env에 API 키 추가 (기존 env 보존)
+        var env = serverConfig["env"] as? [String: Any] ?? [:]
+        env["OPENAI_COMPAT_API_KEY"] = AppConfig.shared.apiKey
+        serverConfig["env"] = env
+        mcpServers[newSessionChannelServerName] = serverConfig
+        root["mcpServers"] = mcpServers
+
+        if let outData = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
+            try? outData.write(to: fileUrl)
+        }
+
+        // 재감지
+        detectChannelConfig()
+    }
+
+    /// Install 이전 상태로 복원. .claude.json.bk → .claude.json
+    private func undoChannelConfig() {
+        let home = NSHomeDirectory()
+        let claudeJsonPath = home + "/.claude.json"
+        let backupPath = home + "/.claude.json.bk"
+        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
+        let backupUrl = URL(fileURLWithPath: backupPath)
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: backupPath) else { return }
+
+        try? fm.removeItem(at: fileUrl)
+        try? fm.moveItem(at: backupUrl, to: fileUrl)
+
+        channelConfigInstalled = false
+
+        // 재감지
+        detectChannelConfig()
     }
 }
 
@@ -422,6 +721,25 @@ struct SessionRow: View {
 
                 // Cloudflare 터널 상태/URL 표시
                 cloudflareStatusView(session: session)
+
+                // 채널 서버 URL 표시
+                if session.isChannelMode, let url = session.channelServerURL {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.horizontal")
+                            .font(.caption2)
+                            .foregroundColor(.purple)
+                        Text(url)
+                            .font(.caption2)
+                            .foregroundColor(.purple)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .onTapGesture {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                            }
+                    }
+                    .help("Channel Server URL — 클릭하여 복사")
+                }
             }
 
             Spacer()

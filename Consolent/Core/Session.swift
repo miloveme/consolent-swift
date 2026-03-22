@@ -28,6 +28,12 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         var autoApprove: Bool = false
         var idleTimeout: Int = 3600
         var env: [String: String]? = nil
+        /// 채널 서버 모드 (Claude Code 전용). ON이면 MCP 채널 서버로 직접 API 제공.
+        var channelEnabled: Bool = false
+        /// 채널 서버 HTTP 포트 (기본 8787).
+        var channelPort: Int = 8787
+        /// MCP 서버 이름. ~/.claude.json의 mcpServers 키와 일치해야 함.
+        var channelServerName: String = "openai-compat"
     }
 
     struct MessageResponse: Codable {
@@ -86,6 +92,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     /// 현재 활성 터널 URL (cloudflared 연결 완료 후 설정됨)
     var tunnelURL: String? { cloudflare.tunnelURL }
 
+    /// 채널 서버 모드 활성 여부 (Claude Code + channelEnabled)
+    var isChannelMode: Bool { config.channelEnabled && config.cliType == .claudeCode }
+
+    /// 채널 서버 URL (채널 모드 활성 시)
+    var channelServerURL: String? {
+        isChannelMode ? "http://localhost:\(config.channelPort)" : nil
+    }
+
     // 메시지 응답 대기용
     private var responseContinuation: CheckedContinuation<MessageResponse, Error>?
     private var currentMessageId: String?
@@ -135,12 +149,28 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         // -li: login + interactive. interactive 플래그가 있어야 .zshrc가 소스되어
         // nvm, Homebrew 등 사용자 PATH 설정이 적용된다.
         var shellArgs = ["-li", "-c"]
+
+        // 채널 모드: CLI 인자에 채널 플래그 추가
+        var effectiveArgs = config.cliArgs
+        if isChannelMode {
+            effectiveArgs.insert(contentsOf: [
+                "--dangerously-load-development-channels",
+                "server:\(config.channelServerName)"
+            ], at: 0)
+        }
+
         let cliCommand = adapter.buildCommand(
             binaryPath: binaryPath,
-            args: config.cliArgs,
+            args: effectiveArgs,
             autoApprove: config.autoApprove
         )
         shellArgs.append(cliCommand)
+
+        // 채널 모드: 환경 변수 주입 (채널 서버 포트)
+        var effectiveEnv = config.env ?? [:]
+        if isChannelMode {
+            effectiveEnv["OPENAI_COMPAT_PORT"] = String(config.channelPort)
+        }
 
         // PTY는 기본 크기(120x40)로 시작.
         // headlessTerminal(500행)은 별도 크기로 동일 데이터를 수신하여 긴 응답 마커를 보존.
@@ -150,8 +180,31 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
             executable: config.shell,
             args: shellArgs,
             cwd: config.workingDirectory,
-            env: config.env
+            env: effectiveEnv.isEmpty ? nil : effectiveEnv
         )
+
+        // 채널 모드: 개발 채널 선택 화면 자동 통과
+        // Ink TUI 렌더링 특성상 텍스트 패턴 매칭이 불가하므로,
+        // 화면 출력이 2초간 안정되면 선택 화면으로 판단하고 Enter 전송
+        if isChannelMode {
+            var lastBuffer = ""
+            var stableCount = 0
+            for _ in 0..<60 {  // 최대 30초
+                try await Task.sleep(nanoseconds: 500_000_000)  // 0.5초
+                let buffer = readHeadlessBuffer()
+                let trimmed = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && trimmed == lastBuffer {
+                    stableCount += 1
+                    if stableCount >= 4 {  // 2초간 안정
+                        try? ptyProcess.write("\r")
+                        break
+                    }
+                } else {
+                    stableCount = 0
+                }
+                lastBuffer = trimmed
+            }
+        }
 
         // CLI 초기화 완료 대기 (프롬프트 출현)
         try await waitForReady(timeout: 30)
