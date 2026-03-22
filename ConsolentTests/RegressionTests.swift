@@ -27,6 +27,10 @@ private struct FixtureFile: Decodable {
         let wasEmpty: Bool
         let hasError: Bool
 
+        // 품질 감지 (옵션)
+        let suspicious: Bool?
+        let suspiciousReasons: [String]?
+
         // 스트리밍 전용 (옵션)
         let baseline: String?
         let pollCount: Int?
@@ -257,6 +261,79 @@ final class RegressionTests: XCTestCase {
                     """)
                 }
             }
+        }
+    }
+
+    // MARK: - 의심 케이스 리포트
+
+    /// suspicious로 표시된 케이스를 리포트한다.
+    /// 테스트 자체는 실패시키지 않지만 (어댑터 수정 전까지는 기존 동작),
+    /// 어댑터 수정 후 suspicious 사유가 해소되면 fixture를 업데이트하라고 알린다.
+    func testSuspicious_report() throws {
+        let urls = Self.fixtureURLs
+        guard !urls.isEmpty else { return }
+
+        var suspiciousCases: [(file: String, id: String, reasons: [String])] = []
+
+        for url in urls {
+            let fixture = try loadFixture(url: url)
+
+            for testCase in fixture.cases {
+                guard testCase.suspicious == true,
+                      let reasons = testCase.suspiciousReasons, !reasons.isEmpty else { continue }
+
+                suspiciousCases.append((
+                    file: url.lastPathComponent,
+                    id: testCase.id,
+                    reasons: reasons
+                ))
+            }
+        }
+
+        if !suspiciousCases.isEmpty {
+            let report = suspiciousCases.map { c in
+                "[\(c.file)] \(c.id): \(c.reasons.joined(separator: ", "))"
+            }.joined(separator: "\n  ")
+            print("[RegressionTests] 🔍 의심 케이스 \(suspiciousCases.count)건:\n  \(report)")
+        }
+    }
+
+    // MARK: - TUI 노이즈 감지 테스트
+
+    /// cleanResponse 결과에 TUI 노이즈가 남아있는지 검증.
+    /// suspicious fixture에서 tui_noise 사유가 있는 케이스를 직접 테스트.
+    func testTUINoiseInCleanResponse() throws {
+        let urls = Self.fixtureURLs
+        guard !urls.isEmpty else { return }
+
+        let noisePatterns = [
+            "esc to interrupt", "esc to cancel",
+            "? for shortcuts", "shift+tab to cycle",
+        ]
+
+        var noiseFound = 0
+
+        for url in urls {
+            let fixture = try loadFixture(url: url)
+
+            for testCase in fixture.cases {
+                guard let adapter = createAdapter(type: testCase.adapterType) else { continue }
+
+                let actual = adapter.cleanResponse(testCase.screenText)
+                let lower = actual.lowercased()
+
+                for pattern in noisePatterns {
+                    if lower.contains(pattern) {
+                        noiseFound += 1
+                        print("[RegressionTests] 🔍 TUI 노이즈 발견: \(testCase.id) — \"\(pattern)\"")
+                        break
+                    }
+                }
+            }
+        }
+
+        if noiseFound > 0 {
+            print("[RegressionTests] ⚠️ TUI 노이즈가 남은 응답: \(noiseFound)건 — 어댑터 필터 개선 필요")
         }
     }
 
