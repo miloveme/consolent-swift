@@ -496,10 +496,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private func completeResponse(signal: OutputParser.CompletionSignal) {
         guard let continuation = responseContinuation else {
             print("[Session] ⚠️ completeResponse: no continuation! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no continuation",
+                                         context: "completeResponse signal=\(signal)")
             return
         }
         guard let messageId = currentMessageId else {
             print("[Session] ⚠️ completeResponse: no messageId! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no messageId",
+                                         context: "completeResponse signal=\(signal)")
             return
         }
 
@@ -659,10 +663,14 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     private func completeStreamingResponse(signal: OutputParser.CompletionSignal) {
         guard let continuation = streamContinuation else {
             print("[Session] ⚠️ completeStreamingResponse: no streamContinuation! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no streamContinuation",
+                                         context: "completeStreamingResponse signal=\(signal)")
             return
         }
         guard let messageId = currentMessageId else {
             print("[Session] ⚠️ completeStreamingResponse: no messageId! signal=\(signal)")
+            DebugLogger.shared.logError(sessionId: id, message: "no messageId",
+                                         context: "completeStreamingResponse signal=\(signal)")
             return
         }
 

@@ -10,10 +10,10 @@ import Foundation
 final class DebugLogger {
 
     enum LogLevel: String, Comparable {
-        case off, info, debug
+        case off, fatal, info, debug
 
         static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
-            let order: [LogLevel] = [.off, .info, .debug]
+            let order: [LogLevel] = [.off, .fatal, .info, .debug]
             return order.firstIndex(of: lhs)! < order.firstIndex(of: rhs)!
         }
     }
@@ -201,9 +201,9 @@ final class DebugLogger {
         ])
     }
 
-    /// 에러 기록
+    /// 에러 기록 (FATAL 레벨 — OFF가 아니면 항상 기록)
     func logError(sessionId: String, message: String, context: String) {
-        guard isEnabled else { return }
+        guard level >= .fatal else { return }
         writeEntry(sessionId: sessionId, event: "error", data: [
             "message": message,
             "context": context,

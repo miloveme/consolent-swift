@@ -109,6 +109,7 @@ struct SettingsView: View {
             Section("로깅") {
                 Picker("로그 레벨", selection: $config.logLevel) {
                     Text("OFF").tag("off")
+                    Text("FATAL — 에러만 기록").tag("fatal")
                     Text("INFO — 파싱 결과, API 요청/응답").tag("info")
                     Text("DEBUG — INFO + PTY 원본 출력").tag("debug")
                 }
