@@ -56,6 +56,13 @@ final class AppConfig: ObservableObject, Codable {
     /// 시작 시 메뉴바 모드로 실행 (윈도우 숨김)
     @Published var launchToMenuBar: Bool = false
 
+    // MARK: - Debug
+
+    /// 디버그 로깅 활성화 (PTY 출력, 파싱 과정, API 요청/응답 기록)
+    @Published var debugLoggingEnabled: Bool = false
+    /// 디버그 로그 보관 기간 (일)
+    @Published var debugLogRetentionDays: Int = 7
+
     // MARK: - Codable
 
     enum CodingKeys: String, CodingKey {
@@ -64,6 +71,7 @@ final class AppConfig: ObservableObject, Codable {
         case defaultCliType, claudePath, defaultCwd, cwdPerCliType, defaultShell, promptPattern
         case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
         case launchToMenuBar
+        case debugLoggingEnabled, debugLogRetentionDays
     }
 
     /// 자동 저장 구독. Published 속성 변경 시 JSON 파일에 저장한다.
@@ -98,6 +106,8 @@ final class AppConfig: ObservableObject, Codable {
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 1000
         headlessTerminalRows = try c.decodeIfPresent(Int.self, forKey: .headlessTerminalRows) ?? 500
         launchToMenuBar = try c.decodeIfPresent(Bool.self, forKey: .launchToMenuBar) ?? false
+        debugLoggingEnabled = try c.decodeIfPresent(Bool.self, forKey: .debugLoggingEnabled) ?? false
+        debugLogRetentionDays = try c.decodeIfPresent(Int.self, forKey: .debugLogRetentionDays) ?? 7
         setupAutoSave()
     }
 
@@ -123,6 +133,8 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(scrollbackLines, forKey: .scrollbackLines)
         try c.encode(headlessTerminalRows, forKey: .headlessTerminalRows)
         try c.encode(launchToMenuBar, forKey: .launchToMenuBar)
+        try c.encode(debugLoggingEnabled, forKey: .debugLoggingEnabled)
+        try c.encode(debugLogRetentionDays, forKey: .debugLogRetentionDays)
     }
 
     /// Published 속성 변경 시 자동으로 JSON 파일에 저장.

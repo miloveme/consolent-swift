@@ -105,6 +105,44 @@ struct SettingsView: View {
                 }
             }
 
+            Section("디버그 로깅") {
+                Toggle(isOn: $config.debugLoggingEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("디버그 로깅")
+                        Text("PTY 원본 출력, 파싱 과정, API 요청/응답을 JSON-Lines 형식으로 기록합니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if config.debugLoggingEnabled {
+                    LabeledContent("로그 보관 기간") {
+                        HStack {
+                            TextField("", value: $config.debugLogRetentionDays, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 60)
+                            Text("일")
+                        }
+                    }
+
+                    LabeledContent("로그 위치") {
+                        Text(DebugLogger.logDirectory.path)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    HStack {
+                        Button("로그 폴더 열기") {
+                            NSWorkspace.shared.open(DebugLogger.logDirectory)
+                        }
+                        Button("오래된 로그 정리") {
+                            DebugLogger.shared.cleanupOldLogs()
+                        }
+                    }
+                }
+            }
+
             Section("리소스 제한") {
                 LabeledContent("최대 동시 세션") {
                     HStack {

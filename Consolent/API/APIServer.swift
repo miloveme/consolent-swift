@@ -387,6 +387,12 @@ final class APIServer: ObservableObject {
             let timeout = TimeInterval(body.timeout ?? 300)
             print("[API] 세션: \(session.id), status=\(session.status.rawValue)")
 
+            // 디버그 로깅: API 요청
+            DebugLogger.shared.logAPIRequest(
+                sessionId: session.id, method: "POST", path: "/v1/chat/completions",
+                model: body.model, message: lastUserMessage, streaming: body.stream ?? false
+            )
+
             // stream 모드: 실시간 SSE (Server-Sent Events)
             if body.stream == true {
                 print("[API] ▶ 스트리밍 모드 진입")
@@ -519,6 +525,13 @@ final class APIServer: ObservableObject {
                     )
                 ],
                 usage: OpenAIUsage(promptTokens: 0, completionTokens: 0, totalTokens: 0)
+            )
+
+            // 디버그 로깅: API 응답 (비스트리밍)
+            DebugLogger.shared.logAPIResponse(
+                sessionId: session.id, path: "/v1/chat/completions",
+                statusCode: 200, responseText: responseText,
+                durationMs: result.response.durationMs
             )
 
             let encoder = JSONEncoder()
