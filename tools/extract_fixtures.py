@@ -628,68 +628,188 @@ def process_single_file(log_path, args, filters):
     return output_path, fixture
 
 
-def show_fixture_status(fixtures_dir):
-    """Fixtures 디렉토리의 fixture 상태를 보여준다."""
+def get_processed_log_sources(fixtures_dir):
+    """기존 fixture에서 추출된 원본 로그 파일명 목록을 반환."""
+    sources = set()
+    if not os.path.isdir(fixtures_dir):
+        return sources
+
+    for f in Path(fixtures_dir).glob("fixture_*.json"):
+        try:
+            data = json.loads(f.read_text())
+            source = data.get("metadata", {}).get("source", "")
+            if source:
+                sources.add(source)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    return sources
+
+
+def scan_unprocessed_logs(log_dir, fixtures_dir, retention_days=7):
+    """미처리 로그와 만료 임박 로그를 스캔.
+
+    Returns:
+        dict: {
+            "unprocessed": [(path, date_str, has_problems, size)],
+            "expiring_soon": [(path, date_str, days_left)],
+            "total_logs": int,
+            "processed_count": int,
+        }
+    """
+    result = {
+        "unprocessed": [],
+        "expiring_soon": [],
+        "total_logs": 0,
+        "processed_count": 0,
+    }
+
+    if not os.path.isdir(log_dir):
+        return result
+
+    processed_sources = get_processed_log_sources(fixtures_dir)
+    today = datetime.now()
+    cutoff = today - timedelta(days=retention_days)
+    warn_date = today - timedelta(days=retention_days - 2)  # 2일 전부터 경고
+
+    all_logs = find_log_files(log_dir)
+    result["total_logs"] = len(all_logs)
+
+    for log_path in all_logs:
+        basename = os.path.basename(log_path)
+        file_size = os.path.getsize(log_path)
+
+        # 이미 처리된 로그인지 확인
+        if basename in processed_sources:
+            result["processed_count"] += 1
+            continue
+
+        # 날짜 디렉토리에서 날짜 추출
+        parent_dir = os.path.basename(os.path.dirname(log_path))
+        try:
+            log_date = datetime.strptime(parent_dir, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        # 미처리 로그 — 문제가 있는지 빠르게 확인
+        has_problems = False
+        try:
+            events = load_log(log_path)
+            if events:
+                groups = group_by_message(events)
+                has_problems = any(
+                    g["errors"]
+                    or (g["parsing_results"] and g["parsing_results"][-1].get("cleanLength", 0) == 0)
+                    or detect_suspicious(g)
+                    for g in groups.values()
+                )
+        except Exception:
+            pass
+
+        result["unprocessed"].append((log_path, parent_dir, has_problems, file_size))
+
+        # 만료 임박 경고 (보관 기간 - 2일 이내)
+        if log_date <= warn_date:
+            days_left = max(0, (log_date + timedelta(days=retention_days) - today).days)
+            result["expiring_soon"].append((log_path, parent_dir, days_left))
+
+    return result
+
+
+def show_fixture_status(fixtures_dir, log_dir=DEFAULT_LOG_DIR, retention_days=7):
+    """Fixtures 디렉토리의 fixture 상태와 로그 현황을 보여준다."""
     if not os.path.isdir(fixtures_dir):
         print(f"Fixtures 디렉토리가 없습니다: {fixtures_dir}")
         return
 
     files = sorted(Path(fixtures_dir).glob("fixture_*.json"))
-    if not files:
-        print("fixture 파일이 없습니다.")
-        return
 
     print(f"\n{'='*70}")
     print(f"  Fixture 현황: {fixtures_dir}")
     print(f"{'='*70}\n")
 
-    stats = {"open": 0, "resolved": 0, "unknown": 0}
-    total_cases = 0
-    corrected_cases = 0
+    if not files:
+        print("  fixture 파일이 없습니다.\n")
+    else:
+        stats = {"open": 0, "resolved": 0, "unknown": 0}
+        total_cases = 0
+        corrected_cases = 0
 
-    for f in files:
-        try:
-            data = json.loads(f.read_text())
-        except json.JSONDecodeError:
-            continue
+        for f in files:
+            try:
+                data = json.loads(f.read_text())
+            except json.JSONDecodeError:
+                continue
 
-        meta = data.get("metadata", {})
-        cases = data.get("cases", [])
-        status = meta.get("status", "?")
-        cli = meta.get("cliType", "?")
-        desc = meta.get("description", "")
-        n_cases = len(cases)
-        n_corrected = sum(1 for c in cases if c.get("corrected"))
-        n_suspicious = sum(1 for c in cases if c.get("suspicious"))
+            meta = data.get("metadata", {})
+            cases = data.get("cases", [])
+            status = meta.get("status", "?")
+            cli = meta.get("cliType", "?")
+            desc = meta.get("description", "")
+            n_cases = len(cases)
+            n_corrected = sum(1 for c in cases if c.get("corrected"))
+            n_suspicious = sum(1 for c in cases if c.get("suspicious"))
 
-        total_cases += n_cases
-        corrected_cases += n_corrected
+            total_cases += n_cases
+            corrected_cases += n_corrected
 
-        if status == "open":
-            stats["open"] += 1
-            icon = "🔴"
-        elif status == "resolved":
-            stats["resolved"] += 1
-            icon = "🟢"
-        else:
-            stats["unknown"] += 1
-            icon = "⚪"
+            if status == "open":
+                stats["open"] += 1
+                icon = "🔴"
+            elif status == "resolved":
+                stats["resolved"] += 1
+                icon = "🟢"
+            else:
+                stats["unknown"] += 1
+                icon = "⚪"
 
-        name = f.name
-        desc_preview = f" — {desc[:40]}" if desc else ""
-        corrected_flag = f", 교정 {n_corrected}" if n_corrected else ""
-        suspicious_flag = f", 의심 {n_suspicious}" if n_suspicious else ""
+            name = f.name
+            desc_preview = f" — {desc[:40]}" if desc else ""
+            corrected_flag = f", 교정 {n_corrected}" if n_corrected else ""
+            suspicious_flag = f", 의심 {n_suspicious}" if n_suspicious else ""
 
-        print(f"  {icon} {name}")
-        print(f"     [{cli}] {status} | {n_cases}건{corrected_flag}{suspicious_flag}{desc_preview}")
+            print(f"  {icon} {name}")
+            print(f"     [{cli}] {status} | {n_cases}건{corrected_flag}{suspicious_flag}{desc_preview}")
 
-    print(f"\n  {'─'*50}")
-    print(f"  총 {len(files)}개 파일, {total_cases}건 케이스 (교정 {corrected_cases}건)")
-    print(f"  🔴 open: {stats['open']}  🟢 resolved: {stats['resolved']}")
+        print(f"\n  {'─'*50}")
+        print(f"  총 {len(files)}개 파일, {total_cases}건 케이스 (교정 {corrected_cases}건)")
+        print(f"  🔴 open: {stats['open']}  🟢 resolved: {stats['resolved']}")
+
+    # 로그 디렉토리 스캔
+    log_scan = scan_unprocessed_logs(log_dir, fixtures_dir, retention_days)
+
+    if log_scan["total_logs"] > 0:
+        unprocessed = log_scan["unprocessed"]
+        expiring = log_scan["expiring_soon"]
+        problem_logs = [u for u in unprocessed if u[2]]  # has_problems=True
+
+        print(f"\n  {'─'*50}")
+        print(f"  📂 로그 현황: {log_dir}")
+        print(f"     전체: {log_scan['total_logs']}개 | "
+              f"처리됨: {log_scan['processed_count']}개 | "
+              f"미처리: {len(unprocessed)}개")
+
+        if problem_logs:
+            print(f"\n  ⚠️  문제 있는 미처리 로그 ({len(problem_logs)}개):")
+            for path, date_str, _, size in problem_logs[:5]:
+                print(f"     [{date_str}] {os.path.basename(path)} ({format_size(size)})")
+            if len(problem_logs) > 5:
+                print(f"     ... 외 {len(problem_logs) - 5}개")
+            print(f"\n     → python3 tools/extract_fixtures.py  # 추출")
+
+        if expiring:
+            print(f"\n  🕐 만료 임박 ({len(expiring)}개, 보관 {retention_days}일):")
+            for path, date_str, days_left in expiring:
+                basename = os.path.basename(path)
+                processed = basename in get_processed_log_sources(fixtures_dir)
+                status = "처리됨" if processed else "⚠️ 미처리"
+                print(f"     [{date_str}] {basename} — {days_left}일 남음 ({status})")
+
     print(f"\n  💡 워크플로우:")
-    print(f"     1. open fixture의 expectedCleanText를 올바른 값으로 수정 + corrected: true")
-    print(f"     2. 어댑터 수정 → xcodebuild test 통과")
-    print(f"     3. status를 \"resolved\"로 변경 → 영구 보관 (회귀 방지)")
+    print(f"     1. python3 tools/extract_fixtures.py          # 문제 있는 로그에서 fixture 추출")
+    print(f"     2. expectedCleanText 수정 + corrected: true   # 올바른 기대값 교정")
+    print(f"     3. 어댑터 수정 → xcodebuild test 통과")
+    print(f"     4. python3 tools/extract_fixtures.py --resolve --confirm  # resolved 전환")
     print(f"{'='*70}\n")
 
 
@@ -905,13 +1025,15 @@ fixture 라이프사이클:
 
     # fixture 관리
     parser.add_argument("--status", action="store_true",
-                        help="fixture 현황 대시보드 출력")
+                        help="fixture 현황 + 로그 처리 상태 대시보드")
     parser.add_argument("--cleanup", action="store_true",
                         help="resolved 중복 fixture 정리 (dry-run)")
     parser.add_argument("--resolve", action="store_true",
                         help="open fixture 중 품질 문제 없는 것을 resolved로 전환 (dry-run)")
     parser.add_argument("--confirm", action="store_true",
                         help="--cleanup/--resolve과 함께 사용 — 실제 실행")
+    parser.add_argument("--retention-days", type=int, default=7,
+                        help="로그 보관 기간 (기본: 7일, --status에서 만료 경고에 사용)")
 
     args = parser.parse_args()
 
@@ -919,7 +1041,8 @@ fixture 라이프사이클:
     if args.status or args.cleanup or args.resolve:
         fixtures_dir = args.output_dir
         if args.status:
-            show_fixture_status(fixtures_dir)
+            show_fixture_status(fixtures_dir, log_dir=args.log_dir,
+                                retention_days=args.retention_days)
         if args.resolve:
             resolve_fixtures(fixtures_dir, dry_run=not args.confirm)
         if args.cleanup:
