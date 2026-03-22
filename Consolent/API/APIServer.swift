@@ -11,9 +11,11 @@ final class APIServer: ObservableObject {
 
     private var app: Application?
     private let sessionManager: SessionManager
+    private let mcpHandler: MCPHandler
 
     init(sessionManager: SessionManager = .shared) {
         self.sessionManager = sessionManager
+        self.mcpHandler = MCPHandler(sessionManager: sessionManager)
     }
 
     @MainActor
@@ -62,6 +64,7 @@ final class APIServer: ObservableObject {
         // 라우트 등록
         registerRoutes(on: authGroup)
         registerOpenAIRoutes(on: authGroup)
+        mcpHandler.registerRoutes(on: authGroup)
 
         // WebSocket
         registerWebSocket(on: app, apiKey: config.apiKey)
