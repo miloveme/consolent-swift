@@ -81,9 +81,9 @@ final class DebugLogger {
 
     // MARK: - 로깅 메서드
 
-    /// PTY 원본 출력 (handleOutput에서 호출)
+    /// PTY 원본 출력 (handleOutput에서 호출, debugLogRawPTY ON 시만 기록)
     func logPTYOutput(sessionId: String, rawData: Data, strippedText: String?) {
-        guard isEnabled else { return }
+        guard isEnabled, AppConfig.shared.debugLogRawPTY else { return }
         writeEntry(sessionId: sessionId, event: "pty_output", data: [
             "rawBase64": rawData.base64EncodedString(),
             "rawLength": rawData.count,

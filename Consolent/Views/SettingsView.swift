@@ -117,6 +117,15 @@ struct SettingsView: View {
                 }
 
                 if config.debugLoggingEnabled {
+                    Toggle(isOn: $config.debugLogRawPTY) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("PTY 원본 출력 기록")
+                            Text("Base64 인코딩된 원본 데이터를 포함합니다. 용량이 크게 증가합니다.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     LabeledContent("로그 보관 기간") {
                         HStack {
                             TextField("", value: $config.debugLogRetentionDays, formatter: NumberFormatter.plain)
