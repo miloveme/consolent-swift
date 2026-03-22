@@ -39,8 +39,21 @@ final class DebugLogger {
         return logs
     }()
 
-    /// 세션별 파일 핸들
-    private var sessionHandles: [String: FileHandle] = [:]
+    /// 세션별 파일 정보
+    private struct LogFileInfo {
+        var handle: FileHandle
+        var basePath: URL          // 시퀀스 번호 없는 원본 경로
+        var currentSize: Int64
+        var sequenceNumber: Int
+    }
+
+    /// 세션별 파일 정보
+    private var sessionFiles: [String: LogFileInfo] = [:]
+
+    /// 로그 파일 최대 크기 (바이트)
+    private var maxFileSize: Int64 {
+        Int64(AppConfig.shared.debugLogMaxFileSizeMB) * 1024 * 1024
+    }
 
     /// 파일 I/O 전용 직렬 큐
     private let queue = DispatchQueue(label: "com.consolent.debuglogger", qos: .utility)
@@ -75,7 +88,12 @@ final class DebugLogger {
 
             FileManager.default.createFile(atPath: filePath.path, contents: nil)
             if let handle = FileHandle(forWritingAtPath: filePath.path) {
-                sessionHandles[sessionId] = handle
+                sessionFiles[sessionId] = LogFileInfo(
+                    handle: handle,
+                    basePath: filePath,
+                    currentSize: 0,
+                    sequenceNumber: 1
+                )
             }
 
             writeEntry(sessionId: sessionId, event: "session_start", data: [
@@ -90,8 +108,8 @@ final class DebugLogger {
         guard isEnabled else { return }
         writeEntry(sessionId: sessionId, event: "session_end", data: [:])
         queue.async { [self] in
-            sessionHandles[sessionId]?.closeFile()
-            sessionHandles.removeValue(forKey: sessionId)
+            sessionFiles[sessionId]?.handle.closeFile()
+            sessionFiles.removeValue(forKey: sessionId)
         }
     }
 
@@ -251,20 +269,20 @@ final class DebugLogger {
     /// JSON-Lines 형식으로 1행 쓰기
     private func writeEntry(sessionId: String, event: String, data: [String: Any]) {
         queue.async { [self] in
-            var entry: [String: Any] = [
+            let entry: [String: Any] = [
                 "timestamp": isoFmt.string(from: Date()),
                 "sessionId": sessionId,
                 "event": event,
                 "data": data,
             ]
 
-            // sessionId에 해당하는 파일 핸들 찾기
-            let handle = sessionHandles[sessionId]
+            // sessionId에 해당하는 파일 정보 찾기
+            let isSessionFile = sessionFiles[sessionId] != nil
 
             // 핸들이 없으면 (API 로그 등) 공용 로그 파일에 기록
             let targetHandle: FileHandle?
-            if let h = handle {
-                targetHandle = h
+            if isSessionFile {
+                targetHandle = sessionFiles[sessionId]?.handle
             } else {
                 targetHandle = getOrCreateSharedHandle()
             }
@@ -273,16 +291,79 @@ final class DebugLogger {
 
             do {
                 let jsonData = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
-                fh.write(jsonData)
-                fh.write("\n".data(using: .utf8)!)
+                let lineData = jsonData + "\n".data(using: .utf8)!
+                fh.write(lineData)
+
+                // 크기 추적
+                let written = Int64(lineData.count)
+                if isSessionFile {
+                    sessionFiles[sessionId]?.currentSize += written
+                    // 최대 크기 초과 시 로테이션
+                    if let info = sessionFiles[sessionId], info.currentSize >= maxFileSize {
+                        rotateFile(sessionId: sessionId)
+                    }
+                } else {
+                    sharedFileSize += written
+                    if sharedFileSize >= maxFileSize {
+                        rotateSharedFile()
+                    }
+                }
             } catch {
                 // JSON 변환 실패 시 무시 (로깅이 앱을 중단시키면 안 됨)
             }
         }
     }
 
+    // MARK: - 파일 로테이션
+
+    /// 세션 로그 파일 로테이션 — 현재 파일을 닫고 시퀀스 번호를 증가시켜 새 파일 생성
+    private func rotateFile(sessionId: String) {
+        guard var info = sessionFiles[sessionId] else { return }
+        info.handle.closeFile()
+
+        info.sequenceNumber += 1
+        let newPath = rotatedPath(basePath: info.basePath, sequence: info.sequenceNumber)
+        FileManager.default.createFile(atPath: newPath.path, contents: nil)
+
+        if let newHandle = FileHandle(forWritingAtPath: newPath.path) {
+            info.handle = newHandle
+            info.currentSize = 0
+            sessionFiles[sessionId] = info
+            print("[DebugLogger] 로그 파일 로테이션: \(newPath.lastPathComponent)")
+        }
+    }
+
+    /// 공용 로그 파일 로테이션
+    private func rotateSharedFile() {
+        sharedHandle?.closeFile()
+        sharedSequence += 1
+
+        guard let basePath = sharedBasePath else { return }
+        let newPath = rotatedPath(basePath: basePath, sequence: sharedSequence)
+        FileManager.default.createFile(atPath: newPath.path, contents: nil)
+
+        sharedHandle = FileHandle(forWritingAtPath: newPath.path)
+        sharedFileSize = 0
+        print("[DebugLogger] 공용 로그 파일 로테이션: \(newPath.lastPathComponent)")
+    }
+
+    /// 시퀀스 번호가 포함된 파일 경로 생성
+    /// 예: session_claude_12-00-00.jsonl → session_claude_12-00-00_002.jsonl
+    private func rotatedPath(basePath: URL, sequence: Int) -> URL {
+        guard sequence > 1 else { return basePath }
+        let name = basePath.deletingPathExtension().lastPathComponent
+        let ext = basePath.pathExtension
+        let newName = "\(name)_\(String(format: "%03d", sequence)).\(ext)"
+        return basePath.deletingLastPathComponent().appendingPathComponent(newName)
+    }
+
+    // MARK: - 공용 로그 파일
+
     /// 세션에 속하지 않는 로그용 공용 파일 핸들
     private var sharedHandle: FileHandle?
+    private var sharedBasePath: URL?
+    private var sharedFileSize: Int64 = 0
+    private var sharedSequence: Int = 1
 
     private func getOrCreateSharedHandle() -> FileHandle? {
         if let h = sharedHandle { return h }
@@ -294,6 +375,9 @@ final class DebugLogger {
         let filePath = dateDir.appendingPathComponent(filename)
         FileManager.default.createFile(atPath: filePath.path, contents: nil)
         sharedHandle = FileHandle(forWritingAtPath: filePath.path)
+        sharedBasePath = filePath
+        sharedFileSize = 0
+        sharedSequence = 1
         return sharedHandle
     }
 }

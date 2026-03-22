@@ -113,7 +113,7 @@ struct SettingsView: View {
                     Text("INFO — 파싱 결과, API 요청/응답").tag("info")
                     Text("DEBUG — INFO + PTY 원본 출력").tag("debug")
                 }
-                .pickerStyle(.radioGroup)
+                .pickerStyle(.menu)
 
                 if config.logLevel != "off" {
                     LabeledContent("로그 보관 기간") {
@@ -122,6 +122,17 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 60)
                             Text("일")
+                        }
+                    }
+
+                    LabeledContent("파일 최대 크기") {
+                        HStack {
+                            TextField("", value: $config.debugLogMaxFileSizeMB, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 60)
+                            Text("MB (초과 시 분할)")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
                         }
                     }
 

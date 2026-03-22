@@ -58,10 +58,12 @@ final class AppConfig: ObservableObject, Codable {
 
     // MARK: - Debug
 
-    /// 로그 레벨: "off", "info", "debug"
+    /// 로그 레벨: "off", "fatal", "info", "debug"
     @Published var logLevel: String = "off"
     /// 디버그 로그 보관 기간 (일)
     @Published var debugLogRetentionDays: Int = 7
+    /// 로그 파일 최대 크기 (MB). 초과 시 새 파일로 분할.
+    @Published var debugLogMaxFileSizeMB: Int = 50
 
     // MARK: - Codable
 
@@ -71,7 +73,7 @@ final class AppConfig: ObservableObject, Codable {
         case defaultCliType, claudePath, defaultCwd, cwdPerCliType, defaultShell, promptPattern
         case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
         case launchToMenuBar
-        case logLevel, debugLogRetentionDays
+        case logLevel, debugLogRetentionDays, debugLogMaxFileSizeMB
     }
 
     /// 자동 저장 구독. Published 속성 변경 시 JSON 파일에 저장한다.
@@ -108,6 +110,7 @@ final class AppConfig: ObservableObject, Codable {
         launchToMenuBar = try c.decodeIfPresent(Bool.self, forKey: .launchToMenuBar) ?? false
         logLevel = try c.decodeIfPresent(String.self, forKey: .logLevel) ?? "off"
         debugLogRetentionDays = try c.decodeIfPresent(Int.self, forKey: .debugLogRetentionDays) ?? 7
+        debugLogMaxFileSizeMB = try c.decodeIfPresent(Int.self, forKey: .debugLogMaxFileSizeMB) ?? 50
         setupAutoSave()
     }
 
@@ -135,6 +138,7 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(launchToMenuBar, forKey: .launchToMenuBar)
         try c.encode(logLevel, forKey: .logLevel)
         try c.encode(debugLogRetentionDays, forKey: .debugLogRetentionDays)
+        try c.encode(debugLogMaxFileSizeMB, forKey: .debugLogMaxFileSizeMB)
     }
 
     /// Published 속성 변경 시 자동으로 JSON 파일에 저장.
