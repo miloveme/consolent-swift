@@ -50,6 +50,11 @@ targets:
     platform: macOS
     sources:
       - path: ConsolentTests
+        excludes:
+          - "Fixtures/**"
+    resources:
+      - path: ConsolentTests/Fixtures
+        buildPhase: resources
     settings:
       base:
         SWIFT_VERSION: "5.10"

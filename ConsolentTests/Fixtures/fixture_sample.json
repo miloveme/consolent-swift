@@ -1,0 +1,64 @@
+{
+  "metadata": {
+    "source": "sample_claude-code_20-30-00.jsonl",
+    "extractedAt": "2026-03-22T20:30:00",
+    "sessionId": "sample001",
+    "cliType": "claude-code",
+    "sessionName": "claude-code",
+    "totalMessages": 2,
+    "extractedCases": 2,
+    "description": "샘플 fixture — 정상 응답 + 빈 응답 케이스"
+  },
+  "cases": [
+    {
+      "id": "msg_normal_001",
+      "type": "sync",
+      "message": "hello",
+      "adapterType": "ClaudeCodeAdapter",
+      "screenText": "\n\n\n⏺ Hello! How can I help you today?\n\n\n  ? for shortcuts                                               ❯ ",
+      "expectedCleanText": "Hello! How can I help you today?",
+      "completionSignal": "ready_signal",
+      "wasEmpty": false,
+      "hasError": false
+    },
+    {
+      "id": "msg_empty_001",
+      "type": "sync",
+      "message": "test",
+      "adapterType": "ClaudeCodeAdapter",
+      "screenText": "\n\n\n  ? for shortcuts                                               ❯ ",
+      "expectedCleanText": "",
+      "completionSignal": "ready_signal",
+      "wasEmpty": true,
+      "hasError": true,
+      "errors": [
+        {
+          "timestamp": "2026-03-22T20:30:05Z",
+          "message": "empty cleanText",
+          "context": "completeResponse"
+        }
+      ]
+    },
+    {
+      "id": "msg_streaming_001",
+      "type": "streaming",
+      "message": "explain swift",
+      "adapterType": "ClaudeCodeAdapter",
+      "screenText": "\n\n\n⏺ Swift is a modern programming language developed by Apple.\n\n\n  ? for shortcuts                                               ❯ ",
+      "expectedCleanText": "Swift is a modern programming language developed by Apple.",
+      "completionSignal": "ready_signal",
+      "wasEmpty": false,
+      "hasError": false,
+      "baseline": "",
+      "pollCount": 5,
+      "totalDeltaLength": 58,
+      "streamingDeltas": [
+        "Swift",
+        " is a modern",
+        " programming language",
+        " developed by",
+        " Apple."
+      ]
+    }
+  ]
+}
