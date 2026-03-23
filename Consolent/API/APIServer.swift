@@ -379,6 +379,12 @@ final class APIServer: ObservableObject {
                 throw Abort(.badRequest, reason: "No user message found")
             }
 
+            // 시스템 프롬프트 추출 (클라이언트가 형식/역할을 지정하는 핵심 컨텍스트)
+            let systemPrompt = body.messages
+                .filter { $0.role == "system" }
+                .map { $0.textContent }
+                .joined(separator: "\n")
+
             // 이미지 content → 임시 파일 저장 → 경로를 메시지에 포함
             // CLI 도구들은 파일 경로를 드래그 앤 드롭처럼 처리한다.
             var imagePaths: [String] = []
@@ -395,15 +401,20 @@ final class APIServer: ObservableObject {
                 throw Abort(.badRequest, reason: "No user message found")
             }
 
-            // 텍스트 + 이미지 경로 결합
-            let lastUserMessage: String
-            if imagePaths.isEmpty {
-                lastUserMessage = textContent
-            } else {
-                let pathList = imagePaths.joined(separator: " ")
-                lastUserMessage = textContent.isEmpty ? pathList : "\(pathList) \(textContent)"
+            // 시스템 프롬프트 + 이미지 경로 + 텍스트 결합
+            var parts: [String] = []
+            if !systemPrompt.isEmpty {
+                parts.append(systemPrompt)
+                print("[API] 📋 시스템 프롬프트: \(systemPrompt.prefix(80))...")
+            }
+            if !imagePaths.isEmpty {
+                parts.append(imagePaths.joined(separator: " "))
                 print("[API] 📷 이미지 \(imagePaths.count)개 첨부")
             }
+            if !textContent.isEmpty {
+                parts.append(textContent)
+            }
+            let lastUserMessage = parts.joined(separator: "\n")
             print("[API] 메시지: \(lastUserMessage.prefix(80))")
 
             // 세션 해결: model 필드로 이름 매칭, 없으면 기존 폴백
@@ -416,6 +427,74 @@ final class APIServer: ObservableObject {
                 sessionId: session.id, method: "POST", path: "/v1/chat/completions",
                 model: body.model, message: lastUserMessage, streaming: body.stream ?? false
             )
+
+            // stream + json_object: 비스트리밍으로 전체 응답 수집 → JSON 추출 → SSE 형식 반환
+            // 스트리밍 델타 수집은 완료 감지가 불안정 (이미지 처리 등 긴 작업에서 조기 종료)
+            // sendMessage는 timeout까지 안정적으로 대기하므로 JSON 추출에 더 적합
+            if body.stream == true && body.expectsJSON {
+                print("[API] ▶ JSON 모드 (sendMessage → JSON 추출 → SSE)")
+                let completionId = "chatcmpl-\(UUID().uuidString.prefix(8).lowercased())"
+                let created = Int(Date().timeIntervalSince1970)
+                let modelId = session.name
+                let sseEncoder = JSONEncoder()
+                sseEncoder.keyEncodingStrategy = .convertToSnakeCase
+
+                // 비스트리밍으로 전체 응답 수집
+                let result = try await session.sendMessage(text: lastUserMessage, timeout: timeout)
+                var responseText = sanitizeForJSON(result.response.result)
+
+                // JSON 추출
+                if let json = extractJSON(from: responseText) {
+                    print("[API] 📋 JSON 추출: \(responseText.count)자 → \(json.count)자")
+                    responseText = json
+                } else {
+                    print("[API] ⚠️ JSON 추출 실패, 원본 \(responseText.count)자")
+                    responseText = buildJSONExtractionError(rawResponse: responseText)
+                }
+
+                // SSE 형식으로 반환: role → content(전체) → finish → [DONE]
+                let response = Response(
+                    status: .ok,
+                    headers: [
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    ]
+                )
+
+                response.body = .init(managedAsyncStream: { writer in
+                    for chunk in [
+                        OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
+                            created: created, model: modelId,
+                            choices: [OpenAIStreamChoice(index: 0,
+                                delta: OpenAIStreamDelta(role: "assistant", content: nil),
+                                finishReason: nil)]),
+                        OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
+                            created: created, model: modelId,
+                            choices: [OpenAIStreamChoice(index: 0,
+                                delta: OpenAIStreamDelta(role: nil, content: responseText),
+                                finishReason: nil)]),
+                        OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
+                            created: created, model: modelId,
+                            choices: [OpenAIStreamChoice(index: 0,
+                                delta: OpenAIStreamDelta(role: nil, content: nil),
+                                finishReason: "stop")])
+                    ] {
+                        if let d = try? sseEncoder.encode(chunk),
+                           let s = String(data: d, encoding: .utf8) {
+                            var buf = ByteBufferAllocator().buffer(capacity: s.utf8.count + 20)
+                            buf.writeString("data: \(s)\n\n")
+                            try await writer.writeBuffer(buf)
+                        }
+                    }
+                    var doneBuf = ByteBufferAllocator().buffer(capacity: 20)
+                    doneBuf.writeString("data: [DONE]\n\n")
+                    try await writer.writeBuffer(doneBuf)
+                })
+
+                return response
+            }
 
             // stream 모드: 실시간 SSE (Server-Sent Events)
             if body.stream == true {
@@ -539,9 +618,14 @@ final class APIServer: ObservableObject {
 
             // response_format: json_object → 응답에서 JSON 블록만 추출
             // 클라이언트가 명시적으로 JSON을 요청한 경우에만 동작
-            if body.expectsJSON, let json = extractJSON(from: responseText) {
-                print("[API] 📋 JSON 추출: \(responseText.count)자 → \(json.count)자")
-                responseText = json
+            if body.expectsJSON {
+                if let json = extractJSON(from: responseText) {
+                    print("[API] 📋 JSON 추출: \(responseText.count)자 → \(json.count)자")
+                    responseText = json
+                } else {
+                    print("[API] ⚠️ JSON 추출 실패, 원본 \(responseText.count)자")
+                    responseText = buildJSONExtractionError(rawResponse: responseText)
+                }
             }
 
             let openAIResponse = OpenAIChatResponse(
@@ -972,6 +1056,12 @@ private func extractJSON(from text: String) -> String? {
             if isValidJSON(candidate) {
                 return candidate
             }
+            // LaTeX 백슬래시 등 수정 후 재시도
+            let fixed = repairJSON(candidate)
+            if fixed != candidate && isValidJSON(fixed) {
+                print("[API] 🔧 JSON 수정 적용 (백슬래시/줄바꿈 등)")
+                return fixed
+            }
         }
     }
 
@@ -1007,6 +1097,12 @@ private func extractJSON(from text: String) -> String? {
                 if isValidJSON(candidate) {
                     return candidate
                 }
+                // LaTeX 백슬래시 등 수정 후 재시도
+                let fixed = repairJSON(candidate)
+                if fixed != candidate && isValidJSON(fixed) {
+                    print("[API] 🔧 JSON 수정 적용 (백슬래시/줄바꿈 등)")
+                    return fixed
+                }
             }
         }
     }
@@ -1014,10 +1110,109 @@ private func extractJSON(from text: String) -> String? {
     return nil
 }
 
-/// JSON 유효성 검사
+/// JSON 유효성 검사. 실패 시 백슬래시 수정 후 재시도.
+/// LLM이 LaTeX(`\frac`, `\;`) 등을 JSON 이스케이프 없이 반환하는 경우가 잦다.
+/// `\f` → form feed, `\;` → invalid escape 등으로 JSON.parse가 실패하므로
+/// 유효하지 않은 백슬래시 시퀀스를 `\\`로 이스케이프하여 복구한다.
 private func isValidJSON(_ text: String) -> Bool {
     guard let data = text.data(using: .utf8) else { return false }
     return (try? JSONSerialization.jsonObject(with: data)) != nil
+}
+
+/// LLM이 생성한 JSON의 흔한 오류를 수정한다.
+/// 1. 문자열 내 잘못된 백슬래시: \frac, \; → \\frac, \\; (LaTeX 등)
+/// 2. 문자열 내 실제 줄바꿈/탭/제어문자 → \n, \t 등으로 이스케이프
+/// JSON 유효 이스케이프: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+private func repairJSON(_ text: String) -> String {
+    var result = ""
+    var inString = false
+    var i = text.startIndex
+
+    while i < text.endIndex {
+        let ch = text[i]
+
+        // 따옴표 토글 (이스케이프된 \" 제외)
+        if ch == "\"" {
+            // 직전 문자가 홀수 개의 \ 인지 확인
+            var backslashCount = 0
+            var checkIdx = result.endIndex
+            while checkIdx > result.startIndex {
+                checkIdx = result.index(before: checkIdx)
+                if result[checkIdx] == "\\" { backslashCount += 1 } else { break }
+            }
+            if backslashCount % 2 == 0 {
+                inString = !inString
+            }
+            result.append(ch)
+            i = text.index(after: i)
+            continue
+        }
+
+        // 문자열 내부 처리
+        if inString {
+            // 실제 줄바꿈/탭/제어문자 → JSON 이스케이프
+            if ch == "\n" { result += "\\n"; i = text.index(after: i); continue }
+            if ch == "\r" { result += "\\r"; i = text.index(after: i); continue }
+            if ch == "\t" { result += "\\t"; i = text.index(after: i); continue }
+            if ch.asciiValue != nil && ch.asciiValue! < 0x20 {
+                // 기타 제어 문자 → \uXXXX
+                result += String(format: "\\u%04x", ch.asciiValue!)
+                i = text.index(after: i)
+                continue
+            }
+
+            // 백슬래시 이스케이프 검사
+            if ch == "\\" {
+                let nextIdx = text.index(after: i)
+                if nextIdx < text.endIndex {
+                    let next = text[nextIdx]
+                    // JSON 유효 이스케이프 → 그대로
+                    if "\"\\bfnrt/".contains(next) {
+                        result.append(ch)
+                        result.append(next)
+                        i = text.index(after: nextIdx)
+                        continue
+                    }
+                    // \uXXXX → 그대로
+                    if next == "u" {
+                        let hexStart = text.index(after: nextIdx)
+                        if let hexEnd = text.index(hexStart, offsetBy: 4, limitedBy: text.endIndex) {
+                            let hex = text[hexStart..<hexEnd]
+                            if hex.allSatisfy({ $0.isHexDigit }) {
+                                result.append(contentsOf: text[i..<hexEnd])
+                                i = hexEnd
+                                continue
+                            }
+                        }
+                    }
+                    // 유효하지 않은 이스케이프 → \\ 로 변환 (LaTeX 등)
+                    result += "\\\\"
+                    i = nextIdx
+                    continue
+                }
+            }
+        }
+
+        result.append(ch)
+        i = text.index(after: i)
+    }
+
+    return result
+}
+
+/// JSON 추출 실패 시 에러 응답을 JSON으로 안전하게 생성한다.
+/// JSONSerialization으로 인코딩하여 이스케이프 누락 방지.
+private func buildJSONExtractionError(rawResponse: String) -> String {
+    let errorDict: [String: Any] = [
+        "error": "JSON extraction failed",
+        "raw_response": rawResponse
+    ]
+    if let data = try? JSONSerialization.data(withJSONObject: errorDict, options: [.sortedKeys]),
+       let json = String(data: data, encoding: .utf8) {
+        return json
+    }
+    // JSONSerialization마저 실패하면 최소한의 에러만 반환
+    return "{\"error\":\"JSON extraction failed\"}"
 }
 
 /// 터미널 출력에서 JSON 비호환 제어 문자를 제거한다.
