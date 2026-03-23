@@ -402,9 +402,12 @@ final class APIServer: ObservableObject {
             }
 
             // 시스템 프롬프트 + 이미지 경로 + 텍스트 결합
+            // PTY에서 \n은 Enter(전송)로 해석되므로 공백으로 결합해야 한다.
+            // 시스템 프롬프트 내부의 줄바꿈도 공백으로 치환.
             var parts: [String] = []
             if !systemPrompt.isEmpty {
-                parts.append(systemPrompt)
+                let flatPrompt = systemPrompt.replacingOccurrences(of: "\n", with: " ")
+                parts.append(flatPrompt)
                 print("[API] 📋 시스템 프롬프트: \(systemPrompt.prefix(80))...")
             }
             if !imagePaths.isEmpty {
@@ -412,9 +415,10 @@ final class APIServer: ObservableObject {
                 print("[API] 📷 이미지 \(imagePaths.count)개 첨부")
             }
             if !textContent.isEmpty {
-                parts.append(textContent)
+                let flatText = textContent.replacingOccurrences(of: "\n", with: " ")
+                parts.append(flatText)
             }
-            let lastUserMessage = parts.joined(separator: "\n")
+            let lastUserMessage = parts.joined(separator: " ")
             print("[API] 메시지: \(lastUserMessage.prefix(80))")
 
             // 세션 해결: model 필드로 이름 매칭, 없으면 기존 폴백
