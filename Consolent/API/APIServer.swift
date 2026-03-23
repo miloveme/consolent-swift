@@ -40,9 +40,9 @@ final class APIServer: ObservableObject {
         app.http.server.configuration.port = config.apiPort
         app.http.server.configuration.serverName = "Consolent"
 
-        // 요청 body 크기 제한 (기본 16KB → 10MB)
-        // OpenAI 호환 클라이언트가 대화 히스토리를 포함해 보내므로 충분히 확보
-        app.routes.defaultMaxBodySize = "10mb"
+        // 요청 body 크기 제한 (기본 16KB → 50MB)
+        // 이미지 첨부(base64) 요청도 수용할 수 있도록 충분히 확보
+        app.routes.defaultMaxBodySize = "50mb"
 
         // JSON 날짜 포맷
         let encoder = JSONEncoder()
@@ -375,12 +375,36 @@ final class APIServer: ObservableObject {
             print("[API] stream=\(body.stream ?? false), model=\(body.model ?? "default"), messages=\(body.messages.count)개")
 
             // 마지막 user 메시지 추출
-            guard let lastUserMsg = body.messages.last(where: { $0.role == "user" }),
-                  !lastUserMsg.textContent.isEmpty else {
+            guard let lastUserMsg = body.messages.last(where: { $0.role == "user" }) else {
                 throw Abort(.badRequest, reason: "No user message found")
             }
-            let lastUserMessage = lastUserMsg.textContent
-            print("[API] 메시지: \(lastUserMessage.prefix(50))")
+
+            // 이미지 content → 임시 파일 저장 → 경로를 메시지에 포함
+            // CLI 도구들은 파일 경로를 드래그 앤 드롭처럼 처리한다.
+            var imagePaths: [String] = []
+            if let content = lastUserMsg.content {
+                for imageURL in content.imageURLs {
+                    if let path = saveImageToTempFile(imageURL) {
+                        imagePaths.append(path)
+                    }
+                }
+            }
+
+            let textContent = lastUserMsg.textContent
+            guard !textContent.isEmpty || !imagePaths.isEmpty else {
+                throw Abort(.badRequest, reason: "No user message found")
+            }
+
+            // 텍스트 + 이미지 경로 결합
+            let lastUserMessage: String
+            if imagePaths.isEmpty {
+                lastUserMessage = textContent
+            } else {
+                let pathList = imagePaths.joined(separator: " ")
+                lastUserMessage = textContent.isEmpty ? pathList : "\(pathList) \(textContent)"
+                print("[API] 📷 이미지 \(imagePaths.count)개 첨부")
+            }
+            print("[API] 메시지: \(lastUserMessage.prefix(80))")
 
             // 세션 해결: model 필드로 이름 매칭, 없으면 기존 폴백
             let session = try await resolveSession(model: body.model)
@@ -439,12 +463,13 @@ final class APIServer: ObservableObject {
                     for await event in eventStream {
                         switch event {
                         case .delta(let text):
+                            let sanitized = sanitizeForJSON(text)
                             let contentChunk = OpenAIStreamChunk(
                                 id: completionId, object: "chat.completion.chunk",
                                 created: created, model: modelId,
                                 choices: [OpenAIStreamChoice(
                                     index: 0,
-                                    delta: OpenAIStreamDelta(role: nil, content: text),
+                                    delta: OpenAIStreamDelta(role: nil, content: sanitized),
                                     finishReason: nil
                                 )]
                             )
@@ -510,7 +535,14 @@ final class APIServer: ObservableObject {
             let completionId = "chatcmpl-\(result.messageId)"
             let created = Int(Date().timeIntervalSince1970)
             let modelId = session.name
-            let responseText = result.response.result
+            var responseText = sanitizeForJSON(result.response.result)
+
+            // response_format: json_object → 응답에서 JSON 블록만 추출
+            // 클라이언트가 명시적으로 JSON을 요청한 경우에만 동작
+            if body.expectsJSON, let json = extractJSON(from: responseText) {
+                print("[API] 📋 JSON 추출: \(responseText.count)자 → \(json.count)자")
+                responseText = json
+            }
 
             let openAIResponse = OpenAIChatResponse(
                 id: completionId,
@@ -788,6 +820,7 @@ struct OpenAIChatRequest: Content {
     var temperature: Double?
     var maxTokens: Int?
     var timeout: Int?
+    var responseFormat: ResponseFormat?
     // OpenAI 호환 클라이언트가 보내는 추가 필드 (무시하되 디코딩 에러 방지)
     var topP: Double?
     var n: Int?
@@ -795,6 +828,15 @@ struct OpenAIChatRequest: Content {
     var presencePenalty: Double?
     var frequencyPenalty: Double?
     var user: String?
+
+    /// response_format이 json_object인지 확인
+    var expectsJSON: Bool {
+        responseFormat?.type == "json_object"
+    }
+}
+
+struct ResponseFormat: Codable {
+    let type: String  // "text" 또는 "json_object"
 }
 
 /// OpenAI content는 문자열 또는 배열 형태 모두 가능.
@@ -822,6 +864,17 @@ enum MessageContent: Codable {
                 .filter { $0.type == "text" }
                 .compactMap { $0.text }
                 .joined(separator: "\n")
+        }
+    }
+
+    /// content에서 이미지 URL(base64 data URL 또는 HTTP URL)을 추출한다.
+    var imageURLs: [String] {
+        switch self {
+        case .string: return []
+        case .parts(let parts):
+            return parts
+                .filter { $0.type == "image_url" }
+                .compactMap { $0.imageUrl?.url }
         }
     }
 
@@ -854,6 +907,128 @@ struct ContentPart: Codable {
 struct ImageURL: Codable {
     let url: String
     var detail: String?
+}
+
+/// base64 data URL을 임시 파일로 저장하고 경로를 반환한다.
+/// CLI 도구들은 터미널에서 파일 경로를 받아 이미지를 처리할 수 있다.
+/// 형식: "data:image/jpeg;base64,/9j/4AAQ..." → /tmp/consolent_img_xxx.jpeg
+private func saveImageToTempFile(_ dataURL: String) -> String? {
+    // data URL 파싱: "data:{mimeType};base64,{data}"
+    guard dataURL.hasPrefix("data:"),
+          let semicolonIdx = dataURL.firstIndex(of: ";"),
+          let commaIdx = dataURL.firstIndex(of: ",") else {
+        // HTTP URL이면 그대로 반환 (CLI가 URL을 직접 처리할 수도 있음)
+        if dataURL.hasPrefix("http://") || dataURL.hasPrefix("https://") {
+            return dataURL
+        }
+        return nil
+    }
+
+    let mimeType = String(dataURL[dataURL.index(dataURL.startIndex, offsetBy: 5)..<semicolonIdx])
+    let base64String = String(dataURL[dataURL.index(after: commaIdx)...])
+
+    guard let imageData = Data(base64Encoded: base64String, options: .ignoreUnknownCharacters) else {
+        print("[API] ⚠️ base64 디코딩 실패")
+        return nil
+    }
+
+    // MIME → 확장자 매핑
+    let ext: String
+    switch mimeType {
+    case "image/jpeg", "image/jpg": ext = "jpeg"
+    case "image/png": ext = "png"
+    case "image/gif": ext = "gif"
+    case "image/webp": ext = "webp"
+    case "image/svg+xml": ext = "svg"
+    default: ext = "png"
+    }
+
+    let filename = "consolent_img_\(UUID().uuidString.prefix(8).lowercased()).\(ext)"
+    let tempPath = NSTemporaryDirectory() + filename
+
+    do {
+        try imageData.write(to: URL(fileURLWithPath: tempPath))
+        print("[API] 📷 이미지 저장: \(tempPath) (\(imageData.count / 1024)KB)")
+        return tempPath
+    } catch {
+        print("[API] ⚠️ 이미지 파일 저장 실패: \(error)")
+        return nil
+    }
+}
+
+/// 텍스트에서 가장 큰 JSON 객체/배열 블록을 추출한다.
+/// CLI 응답에 대화형 텍스트("I'll read the image...")와 JSON이 섞여 있을 때,
+/// response_format: json_object를 요청한 클라이언트를 위해 JSON만 반환한다.
+private func extractJSON(from text: String) -> String? {
+    // 코드 펜스 안의 JSON 우선 탐색: ```json ... ``` 또는 ``` ... ```
+    if let fenceRegex = try? NSRegularExpression(
+        pattern: "```(?:json)?\\s*\\n?(.+?)\\n?```",
+        options: [.dotMatchesLineSeparators]
+    ) {
+        let range = NSRange(text.startIndex..., in: text)
+        if let match = fenceRegex.firstMatch(in: text, options: [], range: range),
+           let jsonRange = Range(match.range(at: 1), in: text) {
+            let candidate = String(text[jsonRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if isValidJSON(candidate) {
+                return candidate
+            }
+        }
+    }
+
+    // 브레이스 매칭: 가장 긴 { ... } 또는 [ ... ] 블록
+    for opener: Character in ["{", "["] {
+        let closer: Character = opener == "{" ? "}" : "]"
+        if let startIdx = text.firstIndex(of: opener) {
+            var depth = 0
+            var inString = false
+            var escape = false
+            var bestEnd: String.Index?
+
+            for idx in text.indices[startIdx...] {
+                let ch = text[idx]
+
+                if escape { escape = false; continue }
+                if ch == "\\" && inString { escape = true; continue }
+                if ch == "\"" { inString = !inString; continue }
+                if inString { continue }
+
+                if ch == opener { depth += 1 }
+                else if ch == closer {
+                    depth -= 1
+                    if depth == 0 {
+                        bestEnd = text.index(after: idx)
+                        break
+                    }
+                }
+            }
+
+            if let endIdx = bestEnd {
+                let candidate = String(text[startIdx..<endIdx])
+                if isValidJSON(candidate) {
+                    return candidate
+                }
+            }
+        }
+    }
+
+    return nil
+}
+
+/// JSON 유효성 검사
+private func isValidJSON(_ text: String) -> Bool {
+    guard let data = text.data(using: .utf8) else { return false }
+    return (try? JSONSerialization.jsonObject(with: data)) != nil
+}
+
+/// 터미널 출력에서 JSON 비호환 제어 문자를 제거한다.
+/// SwiftTerm의 translateToString()이 반환하는 텍스트에 ESC(\x1B), NUL(\x00) 등
+/// 잔여 제어 문자가 남아있을 수 있으며, JSONEncoder는 이를 \uXXXX로 이스케이프하지만
+/// 일부 클라이언트(JavaScript JSON.parse 등)가 이를 처리하지 못하는 경우가 있다.
+private func sanitizeForJSON(_ text: String) -> String {
+    text.unicodeScalars.filter { scalar in
+        // 허용: 일반 텍스트 + 개행(\n, \r) + 탭(\t)
+        scalar.value >= 0x20 || scalar == "\n" || scalar == "\r" || scalar == "\t"
+    }.map { String($0) }.joined()
 }
 
 /// 타입을 알 수 없는 JSON 값을 무시하기 위한 래퍼
