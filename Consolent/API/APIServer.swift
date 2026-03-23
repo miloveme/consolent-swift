@@ -401,12 +401,22 @@ final class APIServer: ObservableObject {
                 throw Abort(.badRequest, reason: "No user message found")
             }
 
+            // 세션 해결 (먼저 수행 — CLI 타입별 시스템 프롬프트 제한에 필요)
+            let session = try await resolveSession(model: body.model)
+
             // 시스템 프롬프트 + 이미지 경로 + 텍스트 결합
             // PTY에서 \n은 Enter(전송)로 해석되므로 공백으로 결합해야 한다.
             // 시스템 프롬프트 내부의 줄바꿈도 공백으로 치환.
             var parts: [String] = []
             if !systemPrompt.isEmpty {
-                let flatPrompt = systemPrompt.replacingOccurrences(of: "\n", with: " ")
+                // CLI 타입별 시스템 프롬프트 크기 제한
+                // Gemini 등 TUI가 긴 입력을 처리하지 못하는 CLI는 제한 적용
+                let maxPromptLength = systemPromptLimit(for: session.config.cliType)
+                var flatPrompt = systemPrompt.replacingOccurrences(of: "\n", with: " ")
+                if flatPrompt.count > maxPromptLength {
+                    flatPrompt = String(flatPrompt.prefix(maxPromptLength))
+                    print("[API] ✂️ 시스템 프롬프트 축소: \(systemPrompt.count)자 → \(maxPromptLength)자 (\(session.config.cliType))")
+                }
                 parts.append(flatPrompt)
                 print("[API] 📋 시스템 프롬프트: \(systemPrompt.prefix(80))...")
             }
@@ -420,9 +430,6 @@ final class APIServer: ObservableObject {
             }
             let lastUserMessage = parts.joined(separator: " ")
             print("[API] 메시지: \(lastUserMessage.prefix(80))")
-
-            // 세션 해결: model 필드로 이름 매칭, 없으면 기존 폴백
-            let session = try await resolveSession(model: body.model)
             let timeout = TimeInterval(body.timeout ?? 300)
             print("[API] 세션: \(session.id), status=\(session.status.rawValue)")
 
@@ -995,6 +1002,19 @@ struct ContentPart: Codable {
 struct ImageURL: Codable {
     let url: String
     var detail: String?
+}
+
+/// CLI 타입별 시스템 프롬프트 최대 길이 (자).
+/// Gemini 등 TUI가 긴 단일 줄 입력을 렌더링하지 못하는 CLI는 제한을 적용한다.
+private func systemPromptLimit(for cliType: CLIType) -> Int {
+    switch cliType {
+    case .gemini:
+        return 2000    // Gemini TUI는 긴 입력에서 렌더링 과부하 발생
+    case .claudeCode:
+        return 8000    // Claude Code는 비교적 긴 입력 처리 가능
+    case .codex:
+        return 8000    // Codex도 비교적 긴 입력 처리 가능
+    }
 }
 
 /// base64 data URL을 임시 파일로 저장하고 경로를 반환한다.
