@@ -37,6 +37,9 @@ Packages/
 .idea/
 .vscode/
 
+# Claude Code
+.claude/
+
 # Environment / Secrets
 .env
 *.pem
