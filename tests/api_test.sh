@@ -402,6 +402,7 @@ for i in $(seq 0 $((${#PTY_STYPES[@]}-1))); do
         "$BASE_URL/v1/chat/completions" \
         "Authorization: Bearer $API_KEY" \
         "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
+    sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
 
     subsect "PTY[$stype] Response Accumulation"
     parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: ALPHA123\"}],\"timeout\":90}")"
@@ -418,7 +419,7 @@ for i in $(seq 0 $((${#PTY_STYPES[@]}-1))); do
             fail "[PTY/$stype] 2nd request failed (HTTP $HTTP_CODE)"
         fi
     else
-        fail "[PTY/$stype] 1st request failed (HTTP $HTTP_CODE)"
+        fail "[PTY/$stype] 1st request failed (HTTP $HTTP_CODE)" "$HTTP_BODY"
     fi
 
     subsect "PTY[$stype] Multi-turn Context"
@@ -480,6 +481,7 @@ for i in $(seq 0 $((${#CH_STYPES[@]}-1))); do
             "$ch_url/v1/chat/completions" \
             "none" \
             "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
+        sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
 
         subsect "Channel[$stype] Multi-turn Context"
         parse_response "$(ext_post "$ch_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Remember: 8833. Reply OK.\"}],\"timeout\":90}")"
@@ -549,6 +551,7 @@ for i in $(seq 0 $((${#AG_STYPES[@]}-1))); do
             "$br_url/v1/chat/completions" \
             "none" \
             "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
+        sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
 
         subsect "Agent[$stype] Response Accumulation"
         parse_response "$(ext_post "$br_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: DELTA111\"}],\"timeout\":90}")"
