@@ -402,37 +402,35 @@ for i in $(seq 0 $((${#PTY_STYPES[@]}-1))); do
         "$BASE_URL/v1/chat/completions" \
         "Authorization: Bearer $API_KEY" \
         "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
-    sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
+    # SSE 후 세션 ready 복귀 대기
+    wait_for_ready "$sid" 30 || true
 
     subsect "PTY[$stype] Response Accumulation"
-    parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: ALPHA123\"}],\"timeout\":90}")"
-    c1=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
-    if [ "$HTTP_CODE" = "200" ] && [ -n "$c1" ]; then
-        pass "[PTY/$stype] 1st response: $(echo "$c1" | head -c 40)"
-        parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: BETA456\"}],\"timeout\":90}")"
-        c2=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
-        if [ "$HTTP_CODE" = "200" ] && [ -n "$c2" ]; then
-            echo "$c2" | grep -q "ALPHA123" \
-                && fail "[PTY/$stype] accumulation bug — 2nd contains 1st" \
-                || pass "[PTY/$stype] no accumulation: $(echo "$c2" | head -c 40)"
-        else
-            fail "[PTY/$stype] 2nd request failed (HTTP $HTTP_CODE)"
-        fi
+    _b1=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with just: ALPHA123"}],"timeout":90}' "$sname")
+    _b2=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with just: BETA456"}],"timeout":90}' "$sname")
+    _c1=$(curl -s "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_b1" | jq -r '.choices[0].message.content // empty')
+    _c2=$(curl -s "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_b2" | jq -r '.choices[0].message.content // empty')
+    if [ -n "$_c1" ] && [ -n "$_c2" ]; then
+        pass "[PTY/$stype] 1st: $(echo "$_c1" | head -c 40)"
+        echo "$_c2" | grep -q "ALPHA123" \
+            && fail "[PTY/$stype] accumulation bug — 2nd contains 1st" \
+            || pass "[PTY/$stype] no accumulation: $(echo "$_c2" | head -c 40)"
     else
-        fail "[PTY/$stype] 1st request failed (HTTP $HTTP_CODE)" "$HTTP_BODY"
+        fail "[PTY/$stype] accumulation test failed c1=[$_c1] c2=[$_c2]"
     fi
 
     subsect "PTY[$stype] Multi-turn Context"
-    parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Remember: 7742. Reply OK.\"}],\"timeout\":90}")"
-    if [ "$HTTP_CODE" = "200" ]; then
+    _bctx1=$(printf '{"model":"%s","messages":[{"role":"user","content":"Remember: 7742. Reply OK."}],"timeout":90}' "$sname")
+    _bctx2=$(printf '{"model":"%s","messages":[{"role":"user","content":"What number did I ask you to remember? Reply with just the number."}],"timeout":90}' "$sname")
+    _rctx=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_bctx1")
+    if [ "$_rctx" = "200" ]; then
         pass "[PTY/$stype] context setup OK"
-        parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"What number did I ask you to remember? Reply with just the number.\"}],\"timeout\":90}")"
-        ctx=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
+        ctx=$(curl -s "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_bctx2" | jq -r '.choices[0].message.content // empty')
         echo "$ctx" | grep -q "7742" \
             && pass "[PTY/$stype] context retained (7742)" \
             || fail "[PTY/$stype] context lost — got: $(echo "$ctx" | head -c 40)"
     else
-        fail "[PTY/$stype] context setup failed (HTTP $HTTP_CODE)"
+        fail "[PTY/$stype] context setup failed (HTTP $_rctx)"
     fi
 done
 fi  # PTY
