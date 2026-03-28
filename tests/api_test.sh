@@ -70,13 +70,15 @@ api_get_badauth() {
         -H "Authorization: Bearer invalid_key_12345"
 }
 
-# 외부 URL에 직접 요청 (브릿지/채널 서버용)
+# 외부 URL에 직접 요청 (브릿지/채널 서버용, API_KEY 포함)
 ext_get() {
     curl -s -w "\n%{http_code}" "$1" \
+        -H "Authorization: Bearer $API_KEY" \
         -H "Content-Type: application/json"
 }
 ext_post() {
     curl -s -w "\n%{http_code}" "$1" \
+        -H "Authorization: Bearer $API_KEY" \
         -H "Content-Type: application/json" \
         -d "$2"
 }
@@ -141,7 +143,7 @@ test_sse_streaming() {
             && pass "[$label] [DONE] received" \
             || fail "[$label] [DONE] missing"
 
-        grep -q '"finish_reason":"stop"' "$STREAM_TMP" \
+        grep -qE '"finish_reason"\s*:\s*"stop"' "$STREAM_TMP" \
             && pass "[$label] finish_reason=stop" \
             || fail "[$label] finish_reason missing"
 
@@ -453,7 +455,8 @@ for i in $(seq 0 $((${#CH_STYPES[@]}-1))); do
     echo "       Channel URL: $ch_url"
 
     subsect "Channel[$stype/$sname] Consolent → 410 Gone"
-    parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}")"
+    _b410=$(printf '{"model":"%s","messages":[{"role":"user","content":"test"}]}' "$sname")
+    parse_response "$(curl -s -w "\n%{http_code}" "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_b410")"
     if [ "$HTTP_CODE" = "410" ]; then
         reason=$(echo "$HTTP_BODY" | jq -r '.reason // empty')
         pass "[Channel/$stype] Consolent returns 410 Gone"
@@ -472,20 +475,23 @@ for i in $(seq 0 $((${#CH_STYPES[@]}-1))); do
             || fail "[Channel/$stype] /v1/models expected 200, got $HTTP_CODE"
 
         subsect "Channel[$stype] Direct server — /v1/chat/completions"
-        test_chat "Channel/$stype" "$ch_url/v1/chat/completions" "none" "$sname" "Reply with just the word PONG"
+        test_chat "Channel/$stype" "$ch_url/v1/chat/completions" "Authorization: Bearer $API_KEY" "$sname" "Reply with just the word PONG"
 
         subsect "Channel[$stype] Direct server — SSE Streaming"
+        _ch_sseb=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with: STREAM_OK"}],"stream":true,"timeout":90}' "$sname")
         test_sse_streaming "Channel/$stype" \
             "$ch_url/v1/chat/completions" \
-            "none" \
-            "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
-        sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
+            "Authorization: Bearer $API_KEY" \
+            "$_ch_sseb"
+        wait_for_ready "$sid" 30 || true
 
         subsect "Channel[$stype] Multi-turn Context"
-        parse_response "$(ext_post "$ch_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Remember: 8833. Reply OK.\"}],\"timeout\":90}")"
+        _ch_b1=$(printf '{"model":"%s","messages":[{"role":"user","content":"Remember: 8833. Reply OK."}],"timeout":90}' "$sname")
+        parse_response "$(curl -s -w "\n%{http_code}" "$ch_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ch_b1")"
         if [ "$HTTP_CODE" = "200" ]; then
             pass "[Channel/$stype] context setup OK"
-            parse_response "$(ext_post "$ch_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"What number? Reply with just the number.\"}],\"timeout\":90}")"
+            _ch_b2=$(printf '{"model":"%s","messages":[{"role":"user","content":"What number? Reply with just the number."}],"timeout":90}' "$sname")
+            parse_response "$(curl -s -w "\n%{http_code}" "$ch_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ch_b2")"
             ctx=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
             echo "$ctx" | grep -q "8833" \
                 && pass "[Channel/$stype] context retained (8833)" \
@@ -517,7 +523,8 @@ for i in $(seq 0 $((${#AG_STYPES[@]}-1))); do
     echo "       Bridge URL: $br_url"
 
     subsect "Agent[$stype/$sname] Consolent → 410 Gone"
-    parse_response "$(api_post '/v1/chat/completions' "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}")"
+    _b410=$(printf '{"model":"%s","messages":[{"role":"user","content":"test"}]}' "$sname")
+    parse_response "$(curl -s -w "\n%{http_code}" "$BASE_URL/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_b410")"
     if [ "$HTTP_CODE" = "410" ]; then
         reason=$(echo "$HTTP_BODY" | jq -r '.reason // empty')
         pass "[Agent/$stype] Consolent returns 410 Gone"
@@ -542,21 +549,24 @@ for i in $(seq 0 $((${#AG_STYPES[@]}-1))); do
             || fail "[Agent/$stype] /v1/models expected 200, got $HTTP_CODE"
 
         subsect "Agent[$stype] Bridge server — /v1/chat/completions"
-        test_chat "Agent/$stype" "$br_url/v1/chat/completions" "none" "$sname" "Reply with just the word PONG"
+        test_chat "Agent/$stype" "$br_url/v1/chat/completions" "Authorization: Bearer $API_KEY" "$sname" "Reply with just the word PONG"
 
         subsect "Agent[$stype] Bridge server — SSE Streaming"
+        _ag_sseb=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with: STREAM_OK"}],"stream":true,"timeout":90}' "$sname")
         test_sse_streaming "Agent/$stype" \
             "$br_url/v1/chat/completions" \
-            "none" \
-            "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: STREAM_OK\"}],\"stream\":true,\"timeout\":90}"
-        sleep 3  # 스트리밍 응답 완료 후 세션 ready 대기
+            "Authorization: Bearer $API_KEY" \
+            "$_ag_sseb"
+        wait_for_ready "$sid" 30 || true
 
         subsect "Agent[$stype] Response Accumulation"
-        parse_response "$(ext_post "$br_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: DELTA111\"}],\"timeout\":90}")"
+        _ag_a1=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with just: DELTA111"}],"timeout":90}' "$sname")
+        parse_response "$(curl -s -w "\n%{http_code}" "$br_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ag_a1")"
         c1=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
         if [ "$HTTP_CODE" = "200" ] && [ -n "$c1" ]; then
             pass "[Agent/$stype] 1st: $(echo "$c1" | head -c 40)"
-            parse_response "$(ext_post "$br_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: GAMMA222\"}],\"timeout\":90}")"
+            _ag_a2=$(printf '{"model":"%s","messages":[{"role":"user","content":"Reply with just: GAMMA222"}],"timeout":90}' "$sname")
+            parse_response "$(curl -s -w "\n%{http_code}" "$br_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ag_a2")"
             c2=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
             if [ "$HTTP_CODE" = "200" ] && [ -n "$c2" ]; then
                 echo "$c2" | grep -q "DELTA111" \
@@ -570,10 +580,12 @@ for i in $(seq 0 $((${#AG_STYPES[@]}-1))); do
         fi
 
         subsect "Agent[$stype] Multi-turn Context"
-        parse_response "$(ext_post "$br_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"Remember: 5599. Reply OK.\"}],\"timeout\":90}")"
+        _ag_m1=$(printf '{"model":"%s","messages":[{"role":"user","content":"Remember: 5599. Reply OK."}],"timeout":90}' "$sname")
+        parse_response "$(curl -s -w "\n%{http_code}" "$br_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ag_m1")"
         if [ "$HTTP_CODE" = "200" ]; then
             pass "[Agent/$stype] context setup OK"
-            parse_response "$(ext_post "$br_url/v1/chat/completions" "{\"model\":\"$sname\",\"messages\":[{\"role\":\"user\",\"content\":\"What number? Reply with just the number.\"}],\"timeout\":90}")"
+            _ag_m2=$(printf '{"model":"%s","messages":[{"role":"user","content":"What number? Reply with just the number."}],"timeout":90}' "$sname")
+            parse_response "$(curl -s -w "\n%{http_code}" "$br_url/v1/chat/completions" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "$_ag_m2")"
             ctx=$(echo "$HTTP_BODY" | jq -r '.choices[0].message.content // empty')
             echo "$ctx" | grep -q "5599" \
                 && pass "[Agent/$stype] context retained (5599)" \

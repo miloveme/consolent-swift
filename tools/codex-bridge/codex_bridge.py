@@ -571,12 +571,19 @@ class CodexBridge:
                 data = {
                     "id": request_id,
                     "object": "chat.completion.chunk",
-                    "choices": [{"delta": {"content": chunk, "role": "assistant"}, "index": 0}],
+                    "choices": [{"delta": {"content": chunk, "role": "assistant"}, "index": 0, "finish_reason": None}],
                 }
                 await response.write(f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode())
         except Exception as e:
             logger.error(f"스트리밍 오류: {e}")
 
+        # 마지막 청크: finish_reason=stop (OpenAI SSE 표준)
+        finish_data = {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}],
+        }
+        await response.write(f"data: {json.dumps(finish_data, ensure_ascii=False, separators=(',', ':'))}\n\n".encode())
         await response.write(b"data: [DONE]\n\n")
         _emit("assistant", full_text)
         _emit("assistant_done", "")

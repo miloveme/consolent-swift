@@ -176,8 +176,9 @@ class SDKBridge:
             "cwd": self.cwd,
         })
 
-    async def handle_models(self, _request: web.Request) -> web.Response:
+    async def handle_models(self, request: web.Request) -> web.Response:
         """GET /v1/models — OpenAI + Anthropic 공통"""
+        if err := self._check_auth(request): return err
         model_id = self.model or "claude-agent-sdk"
         return web.json_response({
             "object": "list",
@@ -189,15 +190,17 @@ class SDKBridge:
             }],
         })
 
-    async def handle_interrupt(self, _request: web.Request) -> web.Response:
+    async def handle_interrupt(self, request: web.Request) -> web.Response:
         """POST /interrupt"""
+        if err := self._check_auth(request): return err
         if self.client and self.busy:
             await self.client.interrupt()
             return web.json_response({"status": "interrupted"})
         return web.json_response({"status": "not_busy"})
 
-    async def handle_disconnect(self, _request: web.Request) -> web.Response:
+    async def handle_disconnect(self, request: web.Request) -> web.Response:
         """POST /disconnect"""
+        if err := self._check_auth(request): return err
         await self.stop()
         return web.json_response({"status": "disconnected"})
 
@@ -335,6 +338,9 @@ class SDKBridge:
             elif isinstance(message, ResultMessage):
                 self.session_id = message.session_id
 
+        # 마지막 청크: finish_reason=stop (OpenAI SSE 표준)
+        finish_chunk = self._openai_chunk(request_id, model, finish_reason="stop")
+        await response.write(f"data: {json.dumps(finish_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n".encode())
         await response.write(b"data: [DONE]\n\n")
         self._emit("assistant", full_text)
         self._emit("assistant_done", "")
@@ -628,7 +634,8 @@ class SDKBridge:
             self._emit("tool_result", f"[{block.tool_use_id}] {result_text[:200]}")
 
     @staticmethod
-    def _openai_chunk(request_id: str, model: str, content: str | None = None, tool_call: dict | None = None) -> dict:
+    def _openai_chunk(request_id: str, model: str, content: str | None = None,
+                      tool_call: dict | None = None, finish_reason: str | None = None) -> dict:
         delta: dict = {}
         if content is not None:
             delta["content"] = content
@@ -637,7 +644,7 @@ class SDKBridge:
         return {
             "id": request_id, "object": "chat.completion.chunk",
             "created": int(time.time()), "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
 
     # ------------------------------------------------------------------

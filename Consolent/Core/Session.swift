@@ -1569,6 +1569,11 @@ extension Session {
         }
         args += ["--permission-mode", config.sdkPermissionMode]
         args += ["--log-level", AppConfig.shared.bridgeLogLevel]
+        // Consolent API 키를 브릿지 서버에 전달 — 동일한 Bearer 토큰으로 인증
+        let apiKey = AppConfig.shared.apiKey
+        if !apiKey.isEmpty {
+            args += ["--api-key", apiKey]
+        }
         process.arguments = args
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -1657,11 +1662,15 @@ extension Session {
 
     /// SDK 브릿지 서버를 종료한다.
     private func stopSDKBridge() {
-        // disconnect 엔드포인트 호출 시도
+        // disconnect 엔드포인트 호출 시도 (API 키 인증 포함)
         if let url = URL(string: "http://127.0.0.1:\(config.sdkPort)/disconnect") {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 2
+            let key = AppConfig.shared.apiKey
+            if !key.isEmpty {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
             URLSession.shared.dataTask(with: request).resume()
         }
 
@@ -1703,6 +1712,7 @@ extension Session {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyBridgeAuth(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = timeout
 
@@ -1758,6 +1768,7 @@ extension Session {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyBridgeAuth(&request)
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             request.timeoutInterval = timeout
 
@@ -1810,6 +1821,14 @@ extension Session {
         }
 
         return stream
+    }
+
+    /// 로컬 브릿지 서버용 URLRequest에 Consolent API 키 인증 헤더를 추가한다.
+    private func applyBridgeAuth(_ request: inout URLRequest) {
+        let key = AppConfig.shared.apiKey
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
     }
 
     /// OpenAI chat/completions 요청 바디를 구성한다.
@@ -1867,8 +1886,11 @@ extension Session {
         let stdoutPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [bridgePath, "--port", String(port), "--cwd", config.workingDirectory,
-                             "--log-level", AppConfig.shared.bridgeLogLevel]
+        var geminiArgs = [bridgePath, "--port", String(port), "--cwd", config.workingDirectory,
+                          "--log-level", AppConfig.shared.bridgeLogLevel]
+        let geminiApiKey = AppConfig.shared.apiKey
+        if !geminiApiKey.isEmpty { geminiArgs += ["--api-key", geminiApiKey] }
+        process.arguments = geminiArgs
         process.currentDirectoryURL = URL(fileURLWithPath: config.workingDirectory)
 
         let stderrPipe = Pipe()
@@ -1988,8 +2010,11 @@ extension Session {
         let stdoutPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [bridgePath, "--port", String(port), "--cwd", config.workingDirectory,
-                             "--log-level", AppConfig.shared.bridgeLogLevel]
+        var codexArgs = [bridgePath, "--port", String(port), "--cwd", config.workingDirectory,
+                         "--log-level", AppConfig.shared.bridgeLogLevel]
+        let codexApiKey = AppConfig.shared.apiKey
+        if !codexApiKey.isEmpty { codexArgs += ["--api-key", codexApiKey] }
+        process.arguments = codexArgs
         process.currentDirectoryURL = URL(fileURLWithPath: config.workingDirectory)
 
         let stderrPipe2 = Pipe()
@@ -2226,6 +2251,7 @@ extension Session {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyBridgeAuth(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = timeout
 
@@ -2284,6 +2310,7 @@ extension Session {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyBridgeAuth(&request)
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             request.timeoutInterval = timeout
 

@@ -52,6 +52,10 @@ final class OutputParser {
     private var idleTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "com.consolent.parser.timer")
 
+    /// 모니터링 시작 이후 PTY 출력이 한 번이라도 도착했는지 여부.
+    /// false이면 메시지를 아직 CLI가 수신하지 않은 것으로 판단하여 완료 선언을 보류한다.
+    private var outputReceivedSinceStart = false
+
     /// 최근 stripped 텍스트 누적 버퍼 (청크 경계를 넘는 프롬프트 감지용)
     private var recentStrippedText = ""
     private let recentTextMaxLength = 500
@@ -145,6 +149,11 @@ final class OutputParser {
             return
         }
 
+        // 모니터링 시작 이후 첫 출력 도착 마킹
+        if !outputReceivedSinceStart {
+            outputReceivedSinceStart = true
+        }
+
         // 응답 완료 감지는 idle 타이머 핸들러에서 수행.
         // 처리 중에는 TUI 스피너가 계속 출력을 생성하므로 타이머가 리셋됨.
         // 출력이 멈추면 타이머가 만료되고, 그때 adapter.isResponseComplete()를 확인.
@@ -156,6 +165,7 @@ final class OutputParser {
         lastOutputTime = Date()
         monitoringStartTime = Date()
         recentStrippedText = ""
+        outputReceivedSinceStart = false
         rebuildApprovalPatterns()
         resetIdleTimer()
     }
@@ -165,6 +175,7 @@ final class OutputParser {
         isMonitoring = false
         cancelIdleTimer()
         recentStrippedText = ""
+        outputReceivedSinceStart = false
     }
 
     // MARK: - Detection
@@ -279,6 +290,14 @@ final class OutputParser {
         // Screen buffer 기반 확인 (더 신뢰성 높음)
         if let checker = screenBufferChecker, let adapter = adapter {
             let screen = checker()
+
+            // 모니터링 시작 후 아직 아무 PTY 출력도 도착하지 않았으면 완료 판단 보류.
+            // 메시지를 전송했지만 CLI가 아직 응답을 시작하지 않은 상태(타이머 선발화) 방지.
+            // Gemini 등 ready 화면이 isResponseComplete()=true를 반환하는 CLI에서 false positive 차단.
+            if !outputReceivedSinceStart {
+                return false
+            }
+
             return adapter.isResponseComplete(screenBuffer: screen)
         }
 
