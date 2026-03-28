@@ -7,7 +7,7 @@
 - Bundle ID: `com.consolent.app`
 - macOS 14.0+, Swift 5.10
 - 빌드: XcodeGen (`project.yml`) + SPM (Vapor, SwiftTerm)
-- 버전: `project.yml`의 `MARKETING_VERSION` (현재 v0.1.8)
+- 버전: `project.yml`의 `MARKETING_VERSION` (현재 v0.1.9)
 - GitHub: `miloveme/consolent-swift`
 
 ## Build & Test
@@ -226,6 +226,7 @@ rm -rf build/
 
 | 버전 | 주요 변경 |
 |------|----------|
+| v0.1.9 | Agent SDK / Gemini Stream / Codex 브릿지 지원, 세션 영속화, 포트 충돌 감지, 자동 강제 복구, 브릿지 인증 강화 |
 | v0.1.8 | TUI 노이즈 필터링 강화, 로그 기반 회귀 테스트 인프라, fixture 라이프사이클 관리 |
 | v0.1.7 | 모델 기반 세션 라우팅, 터미널 렌더링 수정, UI/UX 개선, CLI별 작업 디렉토리 |
 | v0.1.6 | 멀티 어댑터 스트리밍 품질 개선, 응답 파싱 버그 수정 |
