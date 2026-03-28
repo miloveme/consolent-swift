@@ -544,6 +544,23 @@ struct SessionInfo: Codable {
     /// 모든 브릿지 모드 포함 (SDK + Gemini Stream + Codex App Server)
     var bridgeEnabled: Bool
     var bridgeUrl: String?
+
+    // Vapor의 Content 없이도 snake_case JSON 직렬화를 보장하기 위해 명시적 키 지정
+    enum CodingKeys: String, CodingKey {
+        case id, name, status
+        case cliType          = "cli_type"
+        case workingDirectory = "working_directory"
+        case createdAt        = "created_at"
+        case lastActivity     = "last_activity"
+        case messageCount     = "message_count"
+        case tunnelUrl        = "tunnel_url"
+        case channelEnabled   = "channel_enabled"
+        case channelUrl       = "channel_url"
+        case sdkEnabled       = "sdk_enabled"
+        case sdkUrl           = "sdk_url"
+        case bridgeEnabled    = "bridge_enabled"
+        case bridgeUrl        = "bridge_url"
+    }
 }
 
 // MARK: - Errors

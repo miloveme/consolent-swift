@@ -242,7 +242,8 @@ fi
 
 # 세션 목록을 임시 파일로 추출
 SESS_TMP=$(mktemp)
-echo "$HTTP_BODY" | jq -r '.sessions[] | "\(.id)\t\(.name // "")\t\(.cli_type)\t\(.status)\t\(.channel_enabled // false)\t\(.channel_url // "")\t\(.bridge_enabled // false)\t\(.bridge_url // "")"' > "$SESS_TMP"
+# camelCase fallback: SessionInfo가 snake_case 인코딩이 안 될 경우를 대비
+echo "$HTTP_BODY" | jq -r '.sessions[] | "\(.id)\t\(.name // "")\t\(.cli_type // .cliType)\t\(.status)\t\((.channel_enabled // .channelEnabled) // false)\t\(.channel_url // .channelUrl // "")\t\((.bridge_enabled // .bridgeEnabled) // false)\t\(.bridge_url // .bridgeUrl // "")"' > "$SESS_TMP"
 
 while IFS=$'\t' read -r sid sname stype sstatus ch_en ch_url br_en br_url; do
     mode="PTY"
