@@ -242,10 +242,10 @@ fi
 
 # 세션 목록을 임시 파일로 추출
 SESS_TMP=$(mktemp)
-# camelCase fallback: SessionInfo가 snake_case 인코딩이 안 될 경우를 대비
-echo "$HTTP_BODY" | jq -r '.sessions[] | "\(.id)\t\(.name // "")\t\(.cli_type // .cliType)\t\(.status)\t\((.channel_enabled // .channelEnabled) // false)\t\(.channel_url // .channelUrl // "")\t\((.bridge_enabled // .bridgeEnabled) // false)\t\(.bridge_url // .bridgeUrl // "")"' > "$SESS_TMP"
+# 구분자로 | 사용 (tab은 bash whitespace → 연속 탭이 collapse되어 빈 필드 소실됨)
+echo "$HTTP_BODY" | jq -r '.sessions[] | "\(.id)|\(.name // "")|\(.cli_type // .cliType)|\(.status)|\((.channel_enabled // .channelEnabled) // false)|\(.channel_url // .channelUrl // "")|\((.bridge_enabled // .bridgeEnabled) // false)|\(.bridge_url // .bridgeUrl // "")"' > "$SESS_TMP"
 
-while IFS=$'\t' read -r sid sname stype sstatus ch_en ch_url br_en br_url; do
+while IFS='|' read -r sid sname stype sstatus ch_en ch_url br_en br_url; do
     mode="PTY"
     [ "$ch_en" = "true" ] && mode="CHANNEL"
     [ "$br_en" = "true" ] && mode="AGENT"
