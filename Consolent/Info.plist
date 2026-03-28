@@ -24,5 +24,12 @@
 	<string>NSApplication</string>
 	<key>LSUIElement</key>
 	<false/>
+	<!-- 파일 접근 권한 사용 목적 설명 (macOS TCC) -->
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Consolent은 세션 작업 디렉토리로 설정된 문서 폴더 내 파일에 접근합니다. CLI 도구(Claude Code, Gemini, Codex)를 해당 디렉토리에서 실행하기 위해 필요합니다.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Consolent은 세션 작업 디렉토리로 설정된 데스크탑 폴더 내 파일에 접근합니다. CLI 도구를 해당 디렉토리에서 실행하기 위해 필요합니다.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Consolent은 세션 작업 디렉토리로 설정된 다운로드 폴더 내 파일에 접근합니다. CLI 도구를 해당 디렉토리에서 실행하기 위해 필요합니다.</string>
 </dict>
 </plist>

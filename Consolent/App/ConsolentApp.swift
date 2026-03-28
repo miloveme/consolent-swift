@@ -113,10 +113,14 @@ struct ConsolentApp: App {
                 print("[Consolent] Failed to start API server: \(error)")
                 print("[Consolent] Error details: \(String(describing: error))")
 
-                let errorDesc = String(describing: error)
+                // String(describing:)와 localizedDescription 모두 체크 (NIO 에러 표현 방식이 다양함)
+                let allErrorText = String(describing: error) + " " + error.localizedDescription
+                let isPortConflict = allErrorText.contains("NIOCore.IOError") ||
+                                     allErrorText.contains("address already in use") ||
+                                     allErrorText.contains("EADDRINUSE")
                 let userFriendlyError: String
-                if errorDesc.contains("NIOCore.IOError") || errorDesc.contains("address already in use") {
-                    userFriendlyError = "포트가 이미 사용 중입니다. 다른 포트를 지정하거나 기존 프로세스를 종료하세요."
+                if isPortConflict {
+                    userFriendlyError = "포트가 이미 사용 중입니다."
                 } else {
                     userFriendlyError = error.localizedDescription
                 }
@@ -124,7 +128,21 @@ struct ConsolentApp: App {
                 await MainActor.run {
                     apiServer.setServerError(userFriendlyError)
                 }
+
+                // 포트 충돌이면 충돌 정보 수집
+                if isPortConflict {
+                    await apiServer.detectAndSetPortConflict(port: config.apiPort)
+                    // 자동 강제 복구 모드: 충돌 프로세스 즉시 종료 후 재시작
+                    if config.autoForceRecovery {
+                        print("[Consolent] 자동 강제 복구: 포트 \(config.apiPort) 충돌 프로세스 종료 후 재시작")
+                        apiServer.killConflictingProcesses()
+                        apiServer.retryStart(config: config)
+                    }
+                }
             }
+
+            // API 서버 성공/실패 여부와 무관하게 이전 세션 항상 복원
+            await sessionManager.restoreFromStorage()
         }
 
         // SessionManager 설정 동기화

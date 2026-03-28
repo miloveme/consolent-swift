@@ -1,6 +1,29 @@
 import Foundation
 import Vapor
 
+/// 포트 충돌 정보.
+struct PortConflictInfo {
+    let port: Int
+    let pids: [Int32]
+    let processCommands: [String]  // 전체 명령어 (예: "node /path/to/server.js")
+    let suggestedPort: Int         // 사용 가능한 다음 포트
+
+    /// 표시용 프로세스 이름 (명령어의 바이너리 이름만)
+    var displayName: String {
+        guard let firstCmd = processCommands.first, !firstCmd.isEmpty else {
+            return "알 수 없는 프로세스"
+        }
+        let binary = firstCmd.components(separatedBy: " ").first ?? firstCmd
+        return URL(fileURLWithPath: binary).lastPathComponent
+    }
+
+    /// 상세 표시용 (전체 명령어, 너무 길면 자름)
+    var displayCommand: String {
+        let cmd = processCommands.first ?? ""
+        return cmd.count > 80 ? String(cmd.prefix(80)) + "…" : cmd
+    }
+}
+
 /// 임베디드 Vapor HTTP/WebSocket 서버.
 /// macOS 앱 내에서 백그라운드로 동작한다.
 final class APIServer: ObservableObject {
@@ -8,6 +31,7 @@ final class APIServer: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var serverError: String?
     @Published private(set) var connectionCount = 0
+    @Published var portConflict: PortConflictInfo? = nil
 
     private var app: Application?
     private let sessionManager: SessionManager
@@ -89,6 +113,116 @@ final class APIServer: ObservableObject {
         print("[Consolent API] Server stopped")
     }
 
+    // MARK: - 포트 충돌 감지 및 해결
+
+    /// lsof로 해당 포트를 사용 중인 PID 목록을 반환한다.
+    static func findPIDs(onPort port: Int) -> [Int32] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-i", ":\(port)", "-t", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output
+            .components(separatedBy: .newlines)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 > 0 }
+            // 중복 제거 (fork된 자식 프로세스가 같은 소켓 공유)
+            .reduce(into: [Int32]()) { result, pid in
+                if !result.contains(pid) { result.append(pid) }
+            }
+    }
+
+    /// PID로 전체 명령어를 반환한다 (예: "node /path/to/server.js --port 9999").
+    static func processCommand(pid: Int32) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", "\(pid)", "-o", "args="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 해당 포트부터 시작해서 사용 가능한 다음 포트를 반환한다.
+    static func findAvailablePort(startingFrom port: Int) -> Int {
+        var candidate = port + 1
+        while candidate < 65535 {
+            let pids = findPIDs(onPort: candidate)
+            if pids.isEmpty { return candidate }
+            candidate += 1
+        }
+        return port + 1
+    }
+
+    /// 해당 포트의 충돌 정보를 수집한다.
+    static func detectConflict(onPort port: Int) -> PortConflictInfo? {
+        let pids = findPIDs(onPort: port)
+        guard !pids.isEmpty else { return nil }
+
+        // 전체 명령어 수집 (중복 제거)
+        var commands: [String] = []
+        for pid in pids {
+            let cmd = processCommand(pid: pid)
+            if !cmd.isEmpty && !commands.contains(cmd) {
+                commands.append(cmd)
+            }
+        }
+
+        let suggested = findAvailablePort(startingFrom: port)
+        return PortConflictInfo(port: port, pids: pids, processCommands: commands, suggestedPort: suggested)
+    }
+
+    /// 포트 충돌을 감지하고 portConflict를 설정한다.
+    /// start() 실패 후 호출.
+    func detectAndSetPortConflict(port: Int) async {
+        let conflict = await Task.detached(priority: .userInitiated) {
+            APIServer.detectConflict(onPort: port)
+        }.value
+        await MainActor.run {
+            self.portConflict = conflict
+        }
+    }
+
+    /// 충돌 중인 프로세스를 강제 종료한다.
+    func killConflictingProcesses() {
+        guard let conflict = portConflict else { return }
+        for pid in conflict.pids {
+            kill(pid, SIGKILL)
+        }
+        portConflict = nil
+    }
+
+    /// 포트 충돌 해결 후 서버를 재시작한다.
+    func retryStart(config: AppConfig) {
+        Task {
+            // 재시작 전 에러 상태 초기화
+            await MainActor.run {
+                self.portConflict = nil
+                self.setServerError(nil)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            do {
+                try await self.start(config: config)
+            } catch {
+                let errorDesc = String(describing: error)
+                let isPortConflict = errorDesc.contains("NIOCore.IOError") || errorDesc.contains("address already in use")
+                if isPortConflict {
+                    await self.detectAndSetPortConflict(port: config.apiPort)
+                }
+                await MainActor.run {
+                    self.setServerError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
     // MARK: - HTTP Routes
 
     private func registerRoutes(on router: RoutesBuilder) {
@@ -126,7 +260,11 @@ final class APIServer: ObservableObject {
                 env: body.env,
                 channelEnabled: (cliType == .claudeCode) ? (body.channelEnabled ?? false) : false,
                 channelPort: body.channelPort ?? 8787,
-                channelServerName: body.channelServerName ?? "openai-compat"
+                channelServerName: body.channelServerName ?? "openai-compat",
+                sdkEnabled: body.sdkEnabled ?? false,
+                sdkPort: body.sdkPort ?? 8788,
+                sdkModel: body.sdkModel,
+                sdkPermissionMode: body.sdkPermissionMode ?? "acceptEdits"
             )
 
             let session = try await sessionManager.createSession(config: config)
@@ -143,7 +281,9 @@ final class APIServer: ObservableObject {
                 localUrl: localUrl,
                 tunnelUrl: session.tunnelURL,  // 터널 준비 전이면 nil; GET /sessions/:id 로 재조회 가능
                 channelEnabled: session.isChannelMode,
-                channelUrl: session.channelServerURL
+                channelUrl: session.channelServerURL,
+                sdkEnabled: session.isSDKMode,
+                sdkUrl: session.sdkServerURL
             )
 
             return try await response.encodeResponse(status: .created, for: req)
@@ -179,7 +319,9 @@ final class APIServer: ObservableObject {
                 localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
                 tunnelUrl: session.tunnelURL,
                 channelEnabled: session.isChannelMode,
-                channelUrl: session.channelServerURL
+                channelUrl: session.channelServerURL,
+                sdkEnabled: session.isSDKMode,
+                sdkUrl: session.sdkServerURL
             )
         }
 
@@ -237,7 +379,9 @@ final class APIServer: ObservableObject {
                 localUrl: "http://\(statusBindHost):\(statusAppCfg.apiPort)",
                 tunnelUrl: session.tunnelURL,
                 channelEnabled: session.isChannelMode,
-                channelUrl: session.channelServerURL
+                channelUrl: session.channelServerURL,
+                sdkEnabled: session.isSDKMode,
+                sdkUrl: session.sdkServerURL
             )
         }
 
@@ -402,7 +546,15 @@ final class APIServer: ObservableObject {
             }
 
             // 세션 해결 (먼저 수행 — CLI 타입별 시스템 프롬프트 제한에 필요)
+            // proxyBridgeRequests=true이면 Agent/브릿지 세션도 세션 객체를 반환받아 프록시 처리
             let session = try await resolveSession(model: body.model)
+
+            // Agent/브릿지 모드 세션 → 브릿지 서버로 투명 프록시
+            // resolveSession()에서 이미 proxy=true일 때만 이 세션이 반환됨
+            if session.isBridgeMode, let bridgeUrl = session.bridgeServerURL {
+                print("[API] 🔀 프록시 → \(bridgeUrl)/v1/chat/completions (stream=\(body.stream ?? false))")
+                return try await proxyToBridge(req: req, bridgeBaseURL: bridgeUrl, streaming: body.stream ?? false)
+            }
 
             // 시스템 프롬프트 + 이미지 경로 + 텍스트 결합
             // PTY에서 \n은 Enter(전송)로 해석되므로 공백으로 결합해야 한다.
@@ -474,6 +626,7 @@ final class APIServer: ObservableObject {
                     ]
                 )
 
+                let finalResponseText = responseText
                 response.body = .init(managedAsyncStream: { writer in
                     for chunk in [
                         OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
@@ -484,7 +637,7 @@ final class APIServer: ObservableObject {
                         OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
                             created: created, model: modelId,
                             choices: [OpenAIStreamChoice(index: 0,
-                                delta: OpenAIStreamDelta(role: nil, content: responseText),
+                                delta: OpenAIStreamDelta(role: nil, content: finalResponseText),
                                 finishReason: nil)]),
                         OpenAIStreamChunk(id: completionId, object: "chat.completion.chunk",
                             created: created, model: modelId,
@@ -673,17 +826,103 @@ final class APIServer: ObservableObject {
         }
     }
 
+    // MARK: - Bridge Proxy
+
+    /// Agent/브릿지 서버로 요청을 투명하게 포워딩한다.
+    /// 스트리밍: URLSession.bytes()로 SSE 라인을 읽어 Vapor response에 그대로 전달.
+    /// 비스트리밍: URLSession.data()로 JSON 응답을 받아 그대로 반환.
+    private func proxyToBridge(req: Request, bridgeBaseURL: String, streaming: Bool) async throws -> Response {
+        guard let url = URL(string: "\(bridgeBaseURL)/v1/chat/completions") else {
+            throw Abort(.internalServerError, reason: "Invalid bridge URL: \(bridgeBaseURL)")
+        }
+
+        // 원본 요청 body를 그대로 사용
+        guard let bodyData = req.body.data.map({ Data($0.readableBytesView) }) else {
+            throw Abort(.badRequest, reason: "Empty request body")
+        }
+
+        var urlReq = URLRequest(url: url)
+        urlReq.httpMethod = "POST"
+        urlReq.httpBody = bodyData
+        urlReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 브릿지 서버는 인증 불필요 (로컬 전용), Authorization 헤더는 전달하지 않음
+        urlReq.timeoutInterval = 600
+
+        if streaming {
+            // SSE 스트리밍: 브릿지 서버의 이벤트 라인을 클라이언트에 그대로 전달
+            let response = Response(
+                status: .ok,
+                headers: [
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Bridge-Url": bridgeBaseURL,  // 직접 연결용 힌트
+                ]
+            )
+
+            response.body = .init(managedAsyncStream: { writer in
+                let (asyncBytes, _) = try await URLSession.shared.bytes(for: urlReq)
+                for try await line in asyncBytes.lines {
+                    // "data: ..." 라인을 그대로 포워딩
+                    var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 2)
+                    buf.writeString("\(line)\n\n")
+                    try await writer.writeBuffer(buf)
+
+                    if line == "data: [DONE]" { break }
+                }
+            })
+            return response
+
+        } else {
+            // 비스트리밍: JSON 응답 그대로 반환
+            let (data, urlResponse) = try await URLSession.shared.data(for: urlReq)
+            let statusCode = (urlResponse as? HTTPURLResponse)?.statusCode ?? 200
+            return Response(
+                status: HTTPResponseStatus(statusCode: statusCode),
+                headers: [
+                    "Content-Type": "application/json",
+                    "X-Bridge-Url": bridgeBaseURL,
+                ],
+                body: .init(data: data)
+            )
+        }
+    }
+
     /// OpenAI 호환 API용 세션 해결.
     /// model 필드가 있으면 세션 이름으로 매칭, 없으면 기존 폴백 로직 사용.
-    /// 채널 모드 세션은 Consolent API 라우팅에서 제외 — 채널 서버 URL로 안내.
+    /// 채널 모드 세션은 항상 410 Gone (자체 MCP 서버가 직접 처리).
+    /// Agent/브릿지 모드 세션:
+    ///   - proxyBridgeRequests=false(기본): 410 Gone + 브릿지 URL 안내
+    ///   - proxyBridgeRequests=true: 세션 반환 → 호출자에서 프록시 처리
     private func resolveSession(model: String?) async throws -> Session {
+        let proxy = AppConfig.shared.proxyBridgeRequests
+
         // model 필드로 세션 이름 매칭
         if let model = model, !model.isEmpty {
             if let session = sessionManager.getSession(name: model) {
-                // 채널 모드 세션은 Consolent API에서 처리하지 않음
+                // 채널 모드는 항상 410 — MCP 서버가 자체적으로 처리
                 if session.isChannelMode {
                     let channelUrl = session.channelServerURL ?? "http://localhost:\(session.config.channelPort)"
                     throw Abort(.gone, reason: "Session '\(model)' is in channel mode. Send requests directly to \(channelUrl)/v1")
+                }
+                // Agent 모드: 프록시 모드이면 세션 반환, 아니면 410
+                if session.isSDKMode {
+                    if proxy {
+                        print("[API] 🔀 Agent 세션 '\(model)' → 프록시 모드")
+                        return session
+                    }
+                    let sdkUrl = session.sdkServerURL ?? "http://localhost:\(session.config.sdkPort)"
+                    throw Abort(.gone, reason: "Session '\(model)' is in Agent mode. Send requests directly to \(sdkUrl)/v1")
+                }
+                // 브릿지 모드: 프록시 모드이면 세션 반환, 아니면 410
+                if session.isBridgeMode {
+                    if proxy {
+                        print("[API] 🔀 브릿지 세션 '\(model)' → 프록시 모드")
+                        return session
+                    }
+                    let bridgeUrl = session.bridgeServerURL ?? "unknown"
+                    throw Abort(.gone, reason: "Session '\(model)' is in bridge mode. Send requests directly to \(bridgeUrl)/v1")
                 }
                 guard session.status == .ready else {
                     throw Abort(.conflict, reason: "Session '\(model)' exists but is not ready (status: \(session.status.rawValue))")
@@ -699,23 +938,23 @@ final class APIServer: ObservableObject {
 
     /// 기본 세션 폴백.
     /// 우선순위: 고정된 세션 → 앱에서 선택된 세션 → 아무 ready 세션 → 에러
-    /// 채널 모드 세션은 폴백 대상에서 제외.
+    /// 채널/SDK 모드 세션은 폴백 대상에서 제외 (자체 API 서버를 가지므로).
     private func getOrCreateDefaultSession() async throws -> Session {
-        // 1. 이전에 고정된 세션이 ready + 비채널이면 계속 사용 (대화 컨텍스트 유지)
+        // 1. 이전에 고정된 세션이 ready + 비채널 + 비SDK이면 계속 사용 (대화 컨텍스트 유지)
         if let id = defaultSessionId, let session = sessionManager.getSession(id: id),
-           session.status == .ready, !session.isChannelMode {
+           session.status == .ready, !session.isChannelMode, !session.isSDKMode {
             return session
         }
 
-        // 2. 앱에서 현재 선택된 세션이 ready + 비채널이면 사용
+        // 2. 앱에서 현재 선택된 세션이 ready + 비채널 + 비SDK이면 사용
         if let selected = sessionManager.selectedSession,
-           selected.status == .ready, !selected.isChannelMode {
+           selected.status == .ready, !selected.isChannelMode, !selected.isSDKMode {
             defaultSessionId = selected.id
             return selected
         }
 
-        // 3. 아무 ready + 비채널 세션이라도 사용
-        let readySessions = sessionManager.listSessions().filter { $0.status == .ready && !$0.channelEnabled }
+        // 3. 아무 ready + 비채널 + 비SDK 세션이라도 사용
+        let readySessions = sessionManager.listSessions().filter { $0.status == .ready && !$0.channelEnabled && !$0.sdkEnabled }
         if let first = readySessions.first,
            let session = sessionManager.getSession(id: first.id) {
             defaultSessionId = session.id
@@ -825,6 +1064,10 @@ struct CreateSessionRequest: Content {
     var channelEnabled: Bool?         // 채널 서버 모드 (Claude Code 전용)
     var channelPort: Int?             // 채널 서버 포트 (기본 8787)
     var channelServerName: String?    // MCP 서버 이름 (기본 "openai-compat")
+    var sdkEnabled: Bool?             // SDK 모드 (Agent SDK 기반)
+    var sdkPort: Int?                 // SDK 브릿지 서버 포트 (기본 8788)
+    var sdkModel: String?             // SDK에서 사용할 모델
+    var sdkPermissionMode: String?    // SDK 퍼미션 모드
 }
 
 struct CreateSessionResponse: Content {
@@ -836,6 +1079,8 @@ struct CreateSessionResponse: Content {
     let tunnelUrl: String?
     let channelEnabled: Bool
     let channelUrl: String?      // 채널 모드 활성 시 채널 서버 URL
+    let sdkEnabled: Bool
+    let sdkUrl: String?          // SDK 모드 활성 시 SDK 서버 URL
 }
 
 struct UpdateSessionRequest: Content {
@@ -853,6 +1098,8 @@ struct SessionStatusResponse: Content {
     let tunnelUrl: String?
     let channelEnabled: Bool
     let channelUrl: String?      // 채널 모드 활성 시 채널 서버 URL
+    let sdkEnabled: Bool
+    let sdkUrl: String?          // SDK 모드 활성 시 SDK 서버 URL
 }
 
 struct SessionStats: Content {

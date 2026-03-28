@@ -14,6 +14,9 @@ struct CodexAdapter: CLIAdapter {
     let name = "Codex"
     let modelId = "codex"
 
+    /// Codex CLI은 app-server 모드를 지원한다.
+    var supportsCodexAppServerMode: Bool { true }
+
     let defaultBinaryPaths = [
         "/usr/local/bin/codex",
         "/opt/homebrew/bin/codex",
