@@ -321,7 +321,9 @@ final class APIServer: ObservableObject {
                 channelEnabled: session.isChannelMode,
                 channelUrl: session.channelServerURL,
                 sdkEnabled: session.isSDKMode,
-                sdkUrl: session.sdkServerURL
+                sdkUrl: session.sdkServerURL,
+                bridgeEnabled: session.isBridgeMode,
+                bridgeUrl: session.bridgeServerURL
             )
         }
 
@@ -381,7 +383,9 @@ final class APIServer: ObservableObject {
                 channelEnabled: session.isChannelMode,
                 channelUrl: session.channelServerURL,
                 sdkEnabled: session.isSDKMode,
-                sdkUrl: session.sdkServerURL
+                sdkUrl: session.sdkServerURL,
+                bridgeEnabled: session.isBridgeMode,
+                bridgeUrl: session.bridgeServerURL
             )
         }
 
@@ -1100,6 +1104,8 @@ struct SessionStatusResponse: Content {
     let channelUrl: String?      // 채널 모드 활성 시 채널 서버 URL
     let sdkEnabled: Bool
     let sdkUrl: String?          // SDK 모드 활성 시 SDK 서버 URL
+    let bridgeEnabled: Bool      // 모든 브릿지 모드 (SDK + Gemini Stream + Codex App Server)
+    let bridgeUrl: String?       // 브릿지 서버 URL
 }
 
 struct SessionStats: Content {

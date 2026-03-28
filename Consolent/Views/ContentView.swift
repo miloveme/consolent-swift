@@ -238,10 +238,10 @@ struct ContentView: View {
 
                 if session.isSDKMode || session.isGeminiStreamMode || session.isCodexAppServerMode {
                     SDKTerminalView(session: session)
-                        .id(session.id)
+                        .id("\(session.id)-\(session.startGeneration)")
                 } else if windowVisible {
                     TerminalViewWrapper(session: session)
-                        .id(session.id)  // 세션 변경 시 뷰 재생성
+                        .id("\(session.id)-\(session.startGeneration)")  // 세션 변경 또는 재연결 시 뷰 재생성
                 } else {
                     // 윈도우 숨김 시 TerminalView 비활성화 (headless만 동작)
                     EmptyTerminalView()

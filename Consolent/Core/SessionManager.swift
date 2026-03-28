@@ -371,7 +371,9 @@ final class SessionManager: ObservableObject {
                 channelEnabled: session.isChannelMode,
                 channelUrl: session.channelServerURL,
                 sdkEnabled: session.isSDKMode,
-                sdkUrl: session.sdkServerURL
+                sdkUrl: session.sdkServerURL,
+                bridgeEnabled: session.isBridgeMode,
+                bridgeUrl: session.bridgeServerURL
             )
         }.sorted { $0.createdAt < $1.createdAt }
     }
@@ -539,6 +541,9 @@ struct SessionInfo: Codable {
     var channelUrl: String?
     var sdkEnabled: Bool
     var sdkUrl: String?
+    /// 모든 브릿지 모드 포함 (SDK + Gemini Stream + Codex App Server)
+    var bridgeEnabled: Bool
+    var bridgeUrl: String?
 }
 
 // MARK: - Errors

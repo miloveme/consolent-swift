@@ -101,6 +101,9 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     @Published private(set) var pendingApproval: OutputParser.ApprovalRequest? = nil
     @Published private(set) var messageCount: Int = 0
 
+    /// 재연결 횟수 — TerminalView를 강제 재생성하는 데 사용 (`.id()` modifier용)
+    @Published private(set) var startGeneration: Int = 0
+
     /// 전체 출력 버퍼 (ANSI 포함 원본)
     @Published private(set) var outputBuffer: Data = Data()
 
@@ -242,6 +245,15 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
                 // 이전 에러 상태 초기화
                 bridgeError = nil
                 portConflict = nil
+
+                // 화면 초기화: 이전 세션 출력이 재연결 후에도 남아 혼란을 주는 것을 방지
+                outputBuffer = Data()
+                chatMessages = []
+                // headless 터미널 리셋 (ESC c = Full Reset): API 파싱 상태 초기화
+                headlessTerminal.feed(byteArray: [0x1b, 0x63] as [UInt8])
+                // 터미널 뷰 강제 재생성 트리거 (.id() modifier가 이 값을 감시)
+                startGeneration += 1
+
                 // PTY 콜백 재연결 (stopProcess() 이후 재시작 시 필요)
                 setupCallbacks()
                 status = .initializing
