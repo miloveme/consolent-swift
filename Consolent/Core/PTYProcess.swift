@@ -45,9 +45,22 @@ final class PTYProcess: @unchecked Sendable {
         cols: UInt16 = 120,
         rows: UInt16 = 40
     ) throws {
-        guard case .idle = state else {
+        // .idle 또는 .terminated 상태에서만 시작 가능.
+        // .terminated → start() 는 연결 끊기 후 재연결 시 정상 경로.
+        if case .running = state {
             throw PTYError.alreadyRunning
         }
+
+        // 이전 실행의 잔여 리소스 초기화 (재시작 시)
+        readSource?.cancel()
+        readSource = nil
+        waitSource?.cancel()
+        waitSource = nil
+        if masterFd >= 0 {
+            close(masterFd)
+            masterFd = -1
+        }
+        pid = -1
 
         var winSize = winsize(
             ws_row: rows,

@@ -20,6 +20,15 @@ targets:
     platform: macOS
     sources:
       - path: Consolent
+      - path: tools/sdk-bridge
+        buildPhase: resources
+        type: folder
+      - path: tools/gemini-bridge
+        buildPhase: resources
+        type: folder
+      - path: tools/codex-bridge
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.consolent.app

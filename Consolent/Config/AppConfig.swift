@@ -41,6 +41,26 @@ final class AppConfig: ObservableObject, Codable {
         cwdPerCliType[cliType.rawValue] = path
     }
 
+    // MARK: - SDK Mode
+
+    /// SDK 브릿지 Python 가상환경 경로.
+    /// 기본값: ~/Library/Application Support/Consolent/sdk-venv
+    @Published var sdkVenvPath: String = AppConfig.defaultSDKVenvPath
+
+    /// 브릿지 서버 출력 레벨.
+    /// "error": 오류만 / "info": 상태 메시지(기본) / "debug": 원시 출력 포함
+    @Published var bridgeLogLevel: String = "info"
+
+    /// Agent/브릿지 모드 세션에 대한 요청을 Consolent이 투명하게 프록시할지 여부.
+    /// false(기본): 410 Gone + 브릿지 URL 안내 (클라이언트가 직접 연결)
+    /// true: Consolent이 브릿지 서버로 요청을 포워딩 (단일 엔드포인트)
+    @Published var proxyBridgeRequests: Bool = false
+
+    static let defaultSDKVenvPath: String = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("Consolent/sdk-venv").path
+    }()
+
     // MARK: - Terminal
 
     @Published var fontFamily: String = "SF Mono"
@@ -55,6 +75,11 @@ final class AppConfig: ObservableObject, Codable {
 
     /// 시작 시 메뉴바 모드로 실행 (윈도우 숨김)
     @Published var launchToMenuBar: Bool = false
+
+    /// 자동 강제 복구 모드.
+    /// ON: 포트 충돌 등 시작 오류 발생 시 확인 없이 기존 프로세스를 강제 종료하고 자동 재시작.
+    /// OFF(기본): 충돌 정보 표시 후 사용자가 직접 해결 선택.
+    @Published var autoForceRecovery: Bool = false
 
     // MARK: - Debug
 
@@ -73,6 +98,10 @@ final class AppConfig: ObservableObject, Codable {
         case defaultCliType, claudePath, defaultCwd, cwdPerCliType, defaultShell, promptPattern
         case fontFamily, fontSize, theme, scrollbackLines, headlessTerminalRows
         case launchToMenuBar
+        case autoForceRecovery
+        case sdkVenvPath
+        case bridgeLogLevel
+        case proxyBridgeRequests
         case logLevel, debugLogRetentionDays, debugLogMaxFileSizeMB
     }
 
@@ -108,6 +137,10 @@ final class AppConfig: ObservableObject, Codable {
         scrollbackLines = try c.decodeIfPresent(Int.self, forKey: .scrollbackLines) ?? 1000
         headlessTerminalRows = try c.decodeIfPresent(Int.self, forKey: .headlessTerminalRows) ?? 500
         launchToMenuBar = try c.decodeIfPresent(Bool.self, forKey: .launchToMenuBar) ?? false
+        autoForceRecovery = try c.decodeIfPresent(Bool.self, forKey: .autoForceRecovery) ?? false
+        sdkVenvPath = try c.decodeIfPresent(String.self, forKey: .sdkVenvPath) ?? Self.defaultSDKVenvPath
+        bridgeLogLevel = try c.decodeIfPresent(String.self, forKey: .bridgeLogLevel) ?? "info"
+        proxyBridgeRequests = try c.decodeIfPresent(Bool.self, forKey: .proxyBridgeRequests) ?? false
         logLevel = try c.decodeIfPresent(String.self, forKey: .logLevel) ?? "off"
         debugLogRetentionDays = try c.decodeIfPresent(Int.self, forKey: .debugLogRetentionDays) ?? 7
         debugLogMaxFileSizeMB = try c.decodeIfPresent(Int.self, forKey: .debugLogMaxFileSizeMB) ?? 50
@@ -136,6 +169,10 @@ final class AppConfig: ObservableObject, Codable {
         try c.encode(scrollbackLines, forKey: .scrollbackLines)
         try c.encode(headlessTerminalRows, forKey: .headlessTerminalRows)
         try c.encode(launchToMenuBar, forKey: .launchToMenuBar)
+        try c.encode(autoForceRecovery, forKey: .autoForceRecovery)
+        try c.encode(sdkVenvPath, forKey: .sdkVenvPath)
+        try c.encode(bridgeLogLevel, forKey: .bridgeLogLevel)
+        try c.encode(proxyBridgeRequests, forKey: .proxyBridgeRequests)
         try c.encode(logLevel, forKey: .logLevel)
         try c.encode(debugLogRetentionDays, forKey: .debugLogRetentionDays)
         try c.encode(debugLogMaxFileSizeMB, forKey: .debugLogMaxFileSizeMB)

@@ -65,6 +65,15 @@ protocol CLIAdapter {
 
     /// 승인 프롬프트 패턴 (regex). 이 패턴이 출력에서 감지되면 승인 요청으로 처리.
     var approvalPatterns: [String] { get }
+
+    /// SDK(headless) 모드 지원 여부. true이면 PTY 대신 Agent SDK 브릿지 서버로 실행 가능.
+    var supportsSDKMode: Bool { get }
+
+    /// Gemini stream-json 모드 지원 여부. true이면 PTY 대신 Gemini 브릿지 서버로 실행 가능.
+    var supportsGeminiStreamMode: Bool { get }
+
+    /// Codex app-server 모드 지원 여부. true이면 PTY 대신 Codex 브릿지 서버로 실행 가능.
+    var supportsCodexAppServerMode: Bool { get }
 }
 
 // MARK: - Default Implementations
@@ -126,6 +135,15 @@ extension CLIAdapter {
 
     /// 기본 에러 감지: nil (에러 감지 없음). 각 어댑터가 오버라이드.
     func detectError(_ screenText: String) -> String? { nil }
+
+    /// 기본 SDK 모드 미지원. Claude Code 등 SDK가 있는 CLI만 오버라이드.
+    var supportsSDKMode: Bool { false }
+
+    /// 기본 Gemini stream-json 모드 미지원. GeminiAdapter만 오버라이드.
+    var supportsGeminiStreamMode: Bool { false }
+
+    /// 기본 Codex app-server 모드 미지원. CodexAdapter만 오버라이드.
+    var supportsCodexAppServerMode: Bool { false }
 
     /// 기본 승인 패턴 (대부분의 CLI에서 공통)
     var approvalPatterns: [String] {

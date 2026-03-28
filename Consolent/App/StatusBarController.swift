@@ -3,20 +3,70 @@ import Combine
 
 /// 메뉴바 아이콘과 드롭다운 메뉴를 관리한다.
 /// SessionManager를 구독하여 세션 목록을 실시간 반영한다.
-/// 서버-세션 간 색상 매핑으로 시각적 연결을 제공한다.
+///
+/// 색상 규칙:
+///   타입별 팔레트 안에서 순환 (같은 타입 내 구별).
+///   타입 간 팔레트는 색상 계열이 달라 겹치지 않음:
+///     채널  → 초록 계열
+///     SDK   → 청록/파랑 계열
+///     Gemini→ 보라/분홍 계열
+///     Codex → 주황/갈색 계열
+///     PTY   → 파랑 (API 서버 색상 고정)
+///
+///   색상이 겹치더라도 서버 아이템에 세션명을 함께 표시하므로
+///   이름으로 명확히 구별 가능.
+///
+/// 서브메뉴 규칙:
+///   서버 아이템 hover → 연결된 세션 목록 서브메뉴
+///   세션 아이템 hover → 연결된 서버 정보 + URL 복사 + 세션 닫기
 final class StatusBarController: NSObject, NSMenuDelegate {
 
     private var statusItem: NSStatusItem
     private let menu = NSMenu()
     private weak var appDelegate: AppDelegate?
 
-    /// API 서버 색상 (고정)
+    // MARK: - 타입별 색상 팔레트 (계열 구분)
+
     private let apiServerColor = NSColor.systemBlue
 
-    /// 채널 서버 색상 팔레트 (순환 할당)
-    private let channelColors: [NSColor] = [
-        .systemGreen, .systemOrange, .systemPurple,
-        .systemTeal, .systemPink, .systemYellow
+    /// 초록 계열 — 채널 세션 전용
+    private let channelPalette: [NSColor] = [
+        .systemGreen,
+        NSColor(red: 0.20, green: 0.78, blue: 0.35, alpha: 1), // 연초록
+        .systemMint,
+        NSColor(red: 0.05, green: 0.55, blue: 0.25, alpha: 1), // 진초록
+        NSColor(red: 0.55, green: 0.85, blue: 0.10, alpha: 1), // 황록
+        NSColor(red: 0.00, green: 0.65, blue: 0.55, alpha: 1), // 청록
+    ]
+
+    /// 청록/파랑 계열 — SDK(Agent) 세션 전용
+    private let sdkPalette: [NSColor] = [
+        .systemCyan,
+        NSColor(red: 0.10, green: 0.60, blue: 0.90, alpha: 1), // 하늘
+        NSColor(red: 0.00, green: 0.75, blue: 0.85, alpha: 1), // 진청록
+        .systemTeal,
+        NSColor(red: 0.30, green: 0.80, blue: 1.00, alpha: 1), // 밝은 하늘
+        .systemBlue,
+    ]
+
+    /// 보라/분홍 계열 — Gemini 세션 전용
+    private let geminiPalette: [NSColor] = [
+        .systemPurple,
+        .systemPink,
+        NSColor(red: 0.75, green: 0.20, blue: 0.85, alpha: 1), // 자주
+        NSColor(red: 0.90, green: 0.40, blue: 0.65, alpha: 1), // 핫핑크
+        NSColor(red: 0.55, green: 0.10, blue: 0.70, alpha: 1), // 진보라
+        NSColor(red: 0.85, green: 0.55, blue: 0.90, alpha: 1), // 연보라
+    ]
+
+    /// 주황/갈색 계열 — Codex 세션 전용
+    private let codexPalette: [NSColor] = [
+        .systemOrange,
+        NSColor(red: 0.90, green: 0.60, blue: 0.10, alpha: 1), // 황금
+        .systemYellow,
+        .systemBrown,
+        NSColor(red: 0.85, green: 0.35, blue: 0.10, alpha: 1), // 적갈
+        NSColor(red: 0.95, green: 0.70, blue: 0.30, alpha: 1), // 살구
     ]
 
     // MARK: - Init
@@ -37,7 +87,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: - NSMenuDelegate
 
-    /// 메뉴가 열릴 때마다 최신 상태로 재구성
     func menuWillOpen(_ menu: NSMenu) {
         rebuildMenu()
     }
@@ -56,40 +105,107 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             .filter { $0.status != .terminated }
             .sorted { $0.createdAt < $1.createdAt }
 
-        let channelSessions = activeSessions.filter { $0.isChannelMode }
+        // 타입별 세션 분류
+        let ptySessions            = activeSessions.filter { !$0.isChannelMode && !$0.isBridgeMode }
+        let channelSessions        = activeSessions.filter { $0.isChannelMode }
+        let sdkSessions            = activeSessions.filter { $0.isSDKMode }
+        let geminiStreamSessions   = activeSessions.filter { $0.isGeminiStreamMode }
+        let codexAppServerSessions = activeSessions.filter { $0.isCodexAppServerMode }
+        let agentSessions          = sdkSessions + geminiStreamSessions + codexAppServerSessions
 
-        // 채널 세션 ID → 색상 매핑 (생성 순서대로 색상 할당)
-        var channelColorMap: [String: NSColor] = [:]
-        for (index, session) in channelSessions.enumerated() {
-            channelColorMap[session.id] = channelColors[index % channelColors.count]
-        }
+        // 세션 ID → 색상 (타입별 팔레트 순환)
+        var sessionColorMap: [String: NSColor] = [:]
+        for s in ptySessions            { sessionColorMap[s.id] = apiServerColor }
+        for (i, s) in channelSessions.enumerated()        { sessionColorMap[s.id] = channelPalette[i % channelPalette.count] }
+        for (i, s) in sdkSessions.enumerated()            { sessionColorMap[s.id] = sdkPalette[i % sdkPalette.count] }
+        for (i, s) in geminiStreamSessions.enumerated()   { sessionColorMap[s.id] = geminiPalette[i % geminiPalette.count] }
+        for (i, s) in codexAppServerSessions.enumerated() { sessionColorMap[s.id] = codexPalette[i % codexPalette.count] }
 
         // ── API Server ──
         addSectionHeader("API Server", font: sectionFont)
 
         let apiUrl = "http://\(config.apiBind):\(config.apiPort)"
-        addColoredItem("  \(apiUrl)", color: apiServerColor, font: itemFont,
-                       action: #selector(copyToPasteboard(_:)), representedObject: apiUrl,
-                       toolTip: "클릭하여 복사")
+        let apiItem = makeServerItem(title: "  \(apiUrl)", color: apiServerColor,
+                                     font: itemFont, copyValue: apiUrl,
+                                     toolTip: "클릭하여 복사")
+        // 서브메뉴: 연결된 PTY 세션들
+        let apiSub = NSMenu()
+        let apiSubHeader = makeDisabledItem("연결된 세션", font: .systemFont(ofSize: 11, weight: .semibold))
+        apiSub.addItem(apiSubHeader)
+        if ptySessions.isEmpty {
+            apiSub.addItem(makeDisabledItem("  (없음)", font: .systemFont(ofSize: 11)))
+        } else {
+            for s in ptySessions {
+                let dot = sessionStatusDot(s)
+                let sub = makeSessionInfoItem(
+                    title: "  \(dot) \(s.name)  [\(s.status.rawValue)]",
+                    color: apiServerColor, font: .systemFont(ofSize: 12),
+                    sessionId: s.id
+                )
+                apiSub.addItem(sub)
+            }
+        }
+        apiItem.submenu = apiSub
+        menu.addItem(apiItem)
 
-        // ── Channel Server (URL만 표시, 세션명 제거) ──
+        // ── Channel Server ──
         if !channelSessions.isEmpty {
             menu.addItem(NSMenuItem.separator())
-            addSectionHeader("Channel Server", font: sectionFont)
+            addSectionHeader("Channel Server (\(channelSessions.count))", font: sectionFont)
 
             for session in channelSessions {
                 guard let url = session.channelServerURL else { continue }
-                let color = channelColorMap[session.id] ?? .secondaryLabelColor
-                addColoredItem("  \(url)", color: color, font: itemFont,
-                               action: #selector(copyToPasteboard(_:)), representedObject: url,
-                               toolTip: "클릭하여 복사")
+                let color = sessionColorMap[session.id] ?? channelPalette[0]
+                let item = makeServerItem(title: "  \(url)", color: color,
+                                          font: itemFont, copyValue: url,
+                                          toolTip: "클릭하여 복사")
+                item.submenu = makeSessionSubmenu(for: [session], colorMap: sessionColorMap)
+                menu.addItem(item)
+            }
+        }
+
+        // ── Agent Server (SDK + Gemini + Codex 통합) ──
+        if !agentSessions.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            addSectionHeader("Agent Server (\(agentSessions.count))", font: sectionFont)
+
+            // SDK 세션
+            for session in sdkSessions {
+                guard let url = session.sdkServerURL else { continue }
+                let color = sessionColorMap[session.id] ?? sdkPalette[0]
+                let item = makeServerItem(title: "  \(url)", color: color,
+                                          font: itemFont, copyValue: url,
+                                          toolTip: "클릭하여 복사")
+                item.submenu = makeSessionSubmenu(for: [session], colorMap: sessionColorMap)
+                menu.addItem(item)
+            }
+
+            // Gemini 브릿지 세션
+            for session in geminiStreamSessions {
+                guard let url = session.geminiStreamServerURL else { continue }
+                let color = sessionColorMap[session.id] ?? geminiPalette[0]
+                let item = makeServerItem(title: "  \(url)", color: color,
+                                          font: itemFont, copyValue: url,
+                                          toolTip: "클릭하여 복사")
+                item.submenu = makeSessionSubmenu(for: [session], colorMap: sessionColorMap)
+                menu.addItem(item)
+            }
+
+            // Codex 브릿지 세션
+            for session in codexAppServerSessions {
+                guard let url = session.codexAppServerURL else { continue }
+                let color = sessionColorMap[session.id] ?? codexPalette[0]
+                let item = makeServerItem(title: "  \(url)", color: color,
+                                          font: itemFont, copyValue: url,
+                                          toolTip: "클릭하여 복사")
+                item.submenu = makeSessionSubmenu(for: [session], colorMap: sessionColorMap)
+                menu.addItem(item)
             }
         }
 
         // ── API Key ──
         menu.addItem(NSMenuItem.separator())
 
-        // Consolent API Key (API Server 색상)
         let keyItem = NSMenuItem(title: "", action: #selector(copyApiKey), keyEquivalent: "")
         keyItem.target = self
         keyItem.image = NSImage(systemSymbolName: "key", accessibilityDescription: nil)
@@ -100,7 +216,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         keyItem.toolTip = "Consolent API Key 복사"
         menu.addItem(keyItem)
 
-        // 채널 서버별 API Key (각 채널 색상, Consolent 키와 다른 경우만 표시)
+        // 채널 서버 API Key (Consolent 키와 다른 경우만)
         let channelKeys = readChannelApiKeys()
         let consolentKey = config.apiKey
         for session in channelSessions {
@@ -109,20 +225,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                   !channelKey.isEmpty,
                   channelKey != consolentKey else { continue }
 
-            let color = channelColorMap[session.id] ?? .secondaryLabelColor
             let item = NSMenuItem(title: "", action: #selector(copyToPasteboard(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = channelKey
             item.image = NSImage(systemSymbolName: "key", accessibilityDescription: nil)
             item.attributedTitle = NSAttributedString(string: "\(session.name) Key", attributes: [
                 .font: itemFont,
-                .foregroundColor: color
+                .foregroundColor: sessionColorMap[session.id] ?? channelPalette[0]
             ])
             item.toolTip = "채널 서버 API Key 복사"
             menu.addItem(item)
         }
 
-        // ── 세션 목록 (서버 색상으로 구분) ──
+        // ── 세션 목록 ──
         menu.addItem(NSMenuItem.separator())
 
         if activeSessions.isEmpty {
@@ -133,20 +248,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             addSectionHeader("Sessions (\(activeSessions.count))", font: sectionFont)
 
             for session in activeSessions {
-                let statusDot: String
-                switch session.status {
-                case .ready:       statusDot = session.isChannelMode ? "⚡" : "●"
-                case .busy:        statusDot = "◉"
-                case .initializing: statusDot = "○"
-                case .error:       statusDot = "✕"
-                case .waitingApproval: statusDot = "⏸"
-                case .terminated:  statusDot = "◌"
-                }
-
-                let title = "  \(statusDot) \(session.name)  [\(session.status.rawValue)]"
-
-                // 채널 세션 → 해당 채널 색상, 일반 세션 → API 서버 색상
-                let color = channelColorMap[session.id] ?? apiServerColor
+                let dot = sessionStatusDot(session)
+                let title = "  \(dot) \(session.name)  [\(session.status.rawValue)]"
+                let color = sessionColorMap[session.id] ?? apiServerColor
 
                 let item = NSMenuItem(title: title, action: #selector(selectSession(_:)), keyEquivalent: "")
                 item.target = self
@@ -156,15 +260,61 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                     .foregroundColor: color
                 ])
 
-                // 서브메뉴: 세션 닫기
+                // 서브메뉴: 연결된 서버 정보 + 세션 닫기
                 let sub = NSMenu()
+
+                // 서버 정보 헤더
+                let serverLabel = serverInfoLabel(for: session)
+                let serverHeader = makeDisabledItem(serverLabel, font: .systemFont(ofSize: 11, weight: .semibold))
+                sub.addItem(serverHeader)
+
+                // 서버 URL 표시 (클릭하면 복사)
+                if let serverUrl = serverURLForSession(session, config: config) {
+                    let copyServerItem = NSMenuItem(title: "  \(serverUrl)", action: #selector(copyToPasteboard(_:)), keyEquivalent: "")
+                    copyServerItem.target = self
+                    copyServerItem.representedObject = serverUrl
+                    copyServerItem.toolTip = "클릭하여 복사"
+                    copyServerItem.attributedTitle = NSAttributedString(
+                        string: "  \(serverUrl)",
+                        attributes: [
+                            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                            .foregroundColor: color
+                        ]
+                    )
+                    sub.addItem(copyServerItem)
+                }
+
+                sub.addItem(NSMenuItem.separator())
+
+                // 세션 시작/중지 토글
+                let isStoppable = session.status == .ready || session.status == .busy || session.status == .waitingApproval
+                // .stopped: 명시적 연결 끊기, .error: 시작 실패 — 둘 다 재연결 가능
+                let isStartable = session.status == .stopped || session.status == .error
+
+                if isStoppable {
+                    let stopItem = NSMenuItem(title: "연결 끊기", action: #selector(stopSession(_:)), keyEquivalent: "")
+                    stopItem.representedObject = session.id
+                    stopItem.target = self
+                    stopItem.image = NSImage(systemSymbolName: "stop.circle", accessibilityDescription: nil)
+                    sub.addItem(stopItem)
+                } else if isStartable {
+                    let startItem = NSMenuItem(title: "연결하기", action: #selector(startSession(_:)), keyEquivalent: "")
+                    startItem.representedObject = session.id
+                    startItem.target = self
+                    startItem.image = NSImage(systemSymbolName: "play.circle", accessibilityDescription: nil)
+                    sub.addItem(startItem)
+                }
+
+                sub.addItem(NSMenuItem.separator())
+
+                // 세션 닫기
                 let closeItem = NSMenuItem(title: "세션 닫기", action: #selector(closeSession(_:)), keyEquivalent: "")
                 closeItem.target = self
                 closeItem.representedObject = session.id
                 closeItem.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
                 sub.addItem(closeItem)
-                item.submenu = sub
 
+                item.submenu = sub
                 menu.addItem(item)
             }
         }
@@ -195,7 +345,108 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(quitItem)
     }
 
-    // MARK: - 메뉴 헬퍼
+    // MARK: - 헬퍼: 서브메뉴 빌더
+
+    /// 세션 목록을 담은 서버 서브메뉴를 만든다.
+    private func makeSessionSubmenu(for sessions: [Session],
+                                    colorMap: [String: NSColor]) -> NSMenu {
+        let sub = NSMenu()
+        let header = makeDisabledItem("연결된 세션", font: .systemFont(ofSize: 11, weight: .semibold))
+        sub.addItem(header)
+
+        if sessions.isEmpty {
+            sub.addItem(makeDisabledItem("  (없음)", font: .systemFont(ofSize: 11)))
+        } else {
+            for s in sessions {
+                let dot = sessionStatusDot(s)
+                let color = colorMap[s.id] ?? .labelColor
+                let item = makeSessionInfoItem(
+                    title: "  \(dot) \(s.name)  [\(s.status.rawValue)]",
+                    color: color,
+                    font: .systemFont(ofSize: 12),
+                    sessionId: s.id
+                )
+                sub.addItem(item)
+            }
+        }
+        return sub
+    }
+
+    /// 세션에 연결된 서버 레이블 문자열 반환
+    private func serverInfoLabel(for session: Session) -> String {
+        if session.isSDKMode       { return "Agent Server (SDK)" }
+        if session.isGeminiStreamMode { return "Agent Server (Gemini)" }
+        if session.isCodexAppServerMode { return "Agent Server (Codex)" }
+        if session.isChannelMode   { return "Channel Server" }
+        return "API Server"
+    }
+
+    /// 세션에 연결된 서버 URL 반환 (복사용)
+    private func serverURLForSession(_ session: Session, config: AppConfig) -> String? {
+        if session.isSDKMode, let url = session.sdkServerURL { return url }
+        if session.isGeminiStreamMode, let url = session.geminiStreamServerURL { return url }
+        if session.isCodexAppServerMode, let url = session.codexAppServerURL { return url }
+        if session.isChannelMode, let url = session.channelServerURL { return url }
+        return "http://\(config.apiBind):\(config.apiPort)"
+    }
+
+    /// 세션 상태에 따른 아이콘 문자
+    private func sessionStatusDot(_ session: Session) -> String {
+        switch session.status {
+        case .ready:
+            if session.isChannelMode        { return "⚡" }
+            if session.isSDKMode            { return "✦" }
+            if session.isGeminiStreamMode   { return "◈" }
+            if session.isCodexAppServerMode { return "⬡" }
+            return "●"
+        case .busy:            return "◉"
+        case .initializing:    return "○"
+        case .stopped:         return "⏹"
+        case .error:           return "✕"
+        case .waitingApproval: return "⏸"
+        case .terminated:      return "◌"
+        }
+    }
+
+    // MARK: - 헬퍼: 메뉴 아이템 팩토리
+
+    /// 클릭하면 복사되는 서버 URL 아이템 (서브메뉴 포함 가능)
+    private func makeServerItem(title: String, color: NSColor, font: NSFont,
+                                 copyValue: String, toolTip: String?) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(copyToPasteboard(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = copyValue
+        item.toolTip = toolTip
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: font,
+            .foregroundColor: color
+        ])
+        return item
+    }
+
+    /// 클릭하면 세션을 선택하는 세션 아이템
+    private func makeSessionInfoItem(title: String, color: NSColor, font: NSFont,
+                                      sessionId: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(selectSession(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = sessionId
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: font,
+            .foregroundColor: color
+        ])
+        return item
+    }
+
+    /// 클릭 불가 레이블 아이템
+    private func makeDisabledItem(_ title: String, font: NSFont) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor
+        ])
+        return item
+    }
 
     private func addSectionHeader(_ title: String, font: NSFont) {
         let item = NSMenuItem()
@@ -209,19 +460,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         container.addSubview(label)
 
         item.view = container
-        menu.addItem(item)
-    }
-
-    private func addColoredItem(_ title: String, color: NSColor, font: NSFont,
-                                action: Selector, representedObject: Any?, toolTip: String?) {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self
-        item.representedObject = representedObject
-        item.toolTip = toolTip
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: font,
-            .foregroundColor: color
-        ])
         menu.addItem(item)
     }
 
@@ -241,7 +479,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     /// ~/.claude.json에서 MCP 서버별 OPENAI_COMPAT_API_KEY를 읽는다.
-    /// 반환: [서버이름: API키]
     private func readChannelApiKeys() -> [String: String] {
         let path = NSHomeDirectory() + "/.claude.json"
         guard let data = FileManager.default.contents(atPath: path),
@@ -296,6 +533,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         appDelegate?.selectSession(id: sessionId)
     }
 
+    @objc private func stopSession(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        SessionManager.shared.stopSession(id: id)
+    }
+
+    @objc private func startSession(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        Task { try? await SessionManager.shared.startSession(id: id) }
+    }
+
     @objc private func closeSession(_ sender: NSMenuItem) {
         guard let sessionId = sender.representedObject as? String else { return }
 
@@ -305,7 +552,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "종료")
         alert.addButton(withTitle: "취소")
-        // "종료" 버튼을 빨간색으로
         alert.buttons.first?.hasDestructiveAction = true
 
         if alert.runModal() == .alertFirstButtonReturn {
@@ -322,7 +568,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        // 메인 윈도우 없이 설정 윈도우만 열기, 메뉴바 근처 배치
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         NotificationCenter.default.post(name: AppDelegate.openSettingsRequested, object: "menubar")

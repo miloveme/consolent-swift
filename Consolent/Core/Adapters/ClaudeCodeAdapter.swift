@@ -19,6 +19,9 @@ struct ClaudeCodeAdapter: CLIAdapter {
     let readySignal = "? for shortcuts"
     let processingSignal: String? = "esc\\s+to\\s+interrupt"
 
+    /// Claude Code는 Agent SDK를 통한 headless 모드를 지원한다.
+    let supportsSDKMode = true
+
     func buildCommand(binaryPath: String, args: [String], autoApprove: Bool) -> String {
         var cmd = binaryPath
         if autoApprove {

@@ -34,7 +34,7 @@ Consolent/
 │   └── ConsolentApp.swift        # SwiftUI 진입점, API 서버 초기화
 ├── Core/
 │   ├── CLIAdapter.swift          # CLI 어댑터 프로토콜 + CLIType enum
-│   ├── Session.swift             # PTY + 헤드리스 터미널 + 파서 + 스트리밍
+│   ├── Session.swift             # PTY + 헤드리스 터미널 + 파서 + 스트리밍 + SDK 모드
 │   ├── SessionManager.swift      # 전체 세션 관리 (싱글턴, 이름 기반 조회)
 │   ├── OutputParser.swift        # ANSI 파싱, 완료 감지 (흐름만)
 │   ├── PTYProcess.swift          # forkpty() 래퍼
@@ -64,10 +64,16 @@ ConsolentTests/
 ├── CodexAdapterTests.swift       # Codex 어댑터 단위 테스트
 ├── SessionNameTests.swift        # 세션 이름 관리 22개 테스트
 ├── StreamingTests.swift          # 스트리밍 델타/노이즈 필터링 테스트
-└── CloudflareManagerTests.swift  # Cloudflare 터널 테스트
+├── CloudflareManagerTests.swift  # Cloudflare 터널 테스트
+└── SDKSessionTests.swift         # SDK 모드 단위 테스트
 
 tests/
 └── api_test.sh                   # 통합 테스트 (멀티 CLI 타입, bash 3.x 호환)
+
+tools/
+└── sdk-bridge/
+    ├── sdk_bridge.py             # Python SDK 브릿지 서버 (OpenAI 호환 API)
+    └── requirements.txt          # Python 의존성 (claude-agent-sdk, aiohttp)
 ```
 
 ## Key Design Principles
@@ -99,6 +105,19 @@ tests/
 4. **어댑터별 이슈 처리**:
    - **Gemini**: 같은 턴 내 ✦ 멀티 섹션(도구 사용 전후) 누적, ▀▀▀/▄▄▄ 블록바로 새 턴 리셋
    - **Codex**: `backupProcessingDetected` 플래그로 빠른 응답 시 이전 응답 복원 방지
+
+### SDK 모드 (Agent SDK 기반)
+
+PTY/TUI 파싱 없이 Claude Agent SDK를 사용하여 안정적인 세션을 제공한다.
+
+1. Consolent이 Python SDK 브릿지 서버(`tools/sdk-bridge/sdk_bridge.py`)를 서브프로세스로 실행
+2. 브릿지 서버가 `ClaudeSDKClient`를 사용하여 Claude Code CLI와 stdin/stdout JSON-lines 통신
+3. OpenAI 호환 API(`/v1/chat/completions`)를 `http://localhost:<sdkPort>`에서 제공
+4. 유저 앱(Cursor 등)이 직접 SDK 서버에 요청 → 빠른 경로 (스트리밍, 이미지 지원)
+5. Consolent 터미널에는 요청/응답 로그를 실시간 표시 (기존 UX 유지)
+6. Channel 모드와 동일하게 `/v1/chat/completions`에서 410 Gone으로 SDK 서버 URL 안내
+
+**Config 필드**: `sdkEnabled`, `sdkPort`(기본 8788), `sdkModel`, `sdkPermissionMode`
 
 ### 모델 기반 세션 라우팅 (v0.1.6+)
 

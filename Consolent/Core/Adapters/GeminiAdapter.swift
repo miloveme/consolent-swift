@@ -6,6 +6,9 @@ struct GeminiAdapter: CLIAdapter {
     let name = "Gemini"
     let modelId = "gemini"
 
+    /// Gemini CLI은 stream-json 모드를 지원한다.
+    var supportsGeminiStreamMode: Bool { true }
+
     let defaultBinaryPaths = [
         "/usr/local/bin/gemini",
         "/opt/homebrew/bin/gemini",

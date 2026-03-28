@@ -21,6 +21,17 @@ struct ContentView: View {
     @State private var channelConfigError = ""
     @State private var channelConfigInstalled = false  // Install 완료 후 Undo 표시용
     @State private var channelConfigApiKeyMissing = false  // API 키 미설정
+    // SDK 모드
+    @State private var newSessionSDKEnabled = false
+    @State private var newSessionSDKPort = 8788
+    @State private var newSessionSDKModel = ""
+    @State private var newSessionSDKPermissionMode = "acceptEdits"
+    // Gemini stream-json 모드
+    @State private var newSessionGeminiStreamEnabled = false
+    @State private var newSessionGeminiStreamPort = 8789
+    // Codex app-server 모드
+    @State private var newSessionCodexAppServerEnabled = false
+    @State private var newSessionCodexAppServerPort = 8790
     @State private var windowVisible = true  // 윈도우 가시성 (TerminalView 활성화 제어)
 
     /// 현재 이름이 CLI 기본값(claude-code, gemini, codex)이면 false → 타입 변경 시 자동 업데이트
@@ -31,6 +42,7 @@ struct ContentView: View {
     }
 
     var body: some View {
+        ZStack {
         HSplitView {
             // ── 사이드바: 세션 목록 ──
             sidebar
@@ -43,6 +55,12 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 500)
+
+        // 전체 세션 복원 프로그레스 오버레이
+        if sessionManager.isRestoring {
+            restoringOverlay
+        }
+        } // ZStack
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.windowVisibilityChanged)) { notification in
             if let visible = notification.object as? Bool {
                 windowVisible = visible
@@ -111,16 +129,26 @@ struct ContentView: View {
                 }
             } else {
                 List(selection: $sessionManager.selectedSessionId) {
-                    ForEach(Array(sessionManager.sessions.values).sorted(by: { $0.createdAt < $1.createdAt })) { session in
-                        SessionRow(session: session, onClose: {
-                            sessionManager.deleteSession(id: session.id)
-                        })
-                        .tag(session.id)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                    ForEach(sessionManager.sessionOrder, id: \.self) { id in
+                        if let session = sessionManager.sessions[id] {
+                            SessionRow(session: session, onClose: {
+                                sessionManager.deleteSession(id: session.id)
+                            }, onStop: {
+                                sessionManager.stopSession(id: session.id)
+                            }, onStart: {
+                                Task { try? await sessionManager.startSession(id: session.id) }
+                            })
+                            .tag(session.id)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                        }
+                    }
+                    .onMove { from, to in
+                        sessionManager.moveSession(from: from, to: to)
                     }
                 }
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
+                .disabled(sessionManager.isRestoringChannelSessions)
             }
 
             Spacer(minLength: 0)
@@ -139,21 +167,31 @@ struct ContentView: View {
 
                 Spacer()
 
-                // API 상태 표시
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(apiServer.serverError != nil ? Color.red : (apiServer.isRunning ? Color.green : Color.gray))
-                        .frame(width: 8, height: 8)
-                        .shadow(color: apiServer.serverError != nil ? .red.opacity(0.5) : (apiServer.isRunning ? .green.opacity(0.5) : .clear), radius: 2)
-                    Text(verbatim: "API :\(config.apiPort)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .monospacedDigit()
+                // API 상태 표시 (클릭 시 설정 창 이동)
+                Button(action: {
+                    openSettings()
+                    // 서버 탭(tag 1)으로 이동 요청
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        NotificationCenter.default.post(name: AppDelegate.openSettingsRequested, object: 1)
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(apiServer.serverError != nil ? Color.red : (apiServer.isRunning ? Color.green : Color.gray))
+                            .frame(width: 8, height: 8)
+                            .shadow(color: apiServer.serverError != nil ? .red.opacity(0.5) : (apiServer.isRunning ? .green.opacity(0.5) : .clear), radius: 2)
+                        Text(verbatim: "API :\(config.apiPort)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(6)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(6)
+                .buttonStyle(.plain)
+                .help("서버 설정 열기")
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
@@ -167,16 +205,85 @@ struct ContentView: View {
     @ViewBuilder
     private var terminalArea: some View {
         if let session = sessionManager.selectedSession {
-            if windowVisible {
-                TerminalViewWrapper(session: session)
-                    .id(session.id)  // 세션 변경 시 뷰 재생성
-            } else {
-                // 윈도우 숨김 시 TerminalView 비활성화 (headless만 동작)
-                EmptyTerminalView()
+            VStack(spacing: 0) {
+                // 포트 충돌 배너 (브릿지 세션)
+                if let conflict = session.portConflict {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("포트 \(conflict.port) 충돌")
+                                .fontWeight(.semibold)
+                        }
+                        Text("\"\(conflict.displayName)\"이(가) 포트 \(conflict.port)를 사용 중입니다.")
+                            .font(.callout)
+                        if !conflict.displayCommand.isEmpty {
+                            Text(conflict.displayCommand)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        HStack(spacing: 10) {
+                            Button("강제 종료 후 재시작") {
+                                Task { try? await session.resolvePortConflictAndRestart() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                        }
+                    }
+                    .padding()
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                    .padding()
+                }
+
+                if session.isSDKMode || session.isGeminiStreamMode || session.isCodexAppServerMode {
+                    SDKTerminalView(session: session)
+                        .id("\(session.id)-\(session.startGeneration)")
+                } else if windowVisible {
+                    TerminalViewWrapper(session: session)
+                        .id("\(session.id)-\(session.startGeneration)")  // 세션 변경 또는 재연결 시 뷰 재생성
+                } else {
+                    // 윈도우 숨김 시 TerminalView 비활성화 (headless만 동작)
+                    EmptyTerminalView()
+                }
             }
         } else {
             EmptyTerminalView()
         }
+    }
+
+    // MARK: - Restoring Progress Overlay
+
+    private var restoringOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                ProgressView()
+                    .scaleEffect(1.2)
+
+                VStack(spacing: 6) {
+                    Text("세션 복원 중...")
+                        .font(.headline)
+                    Text("\(sessionManager.restoringCurrent) / \(sessionManager.restoringTotal) 완료")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                ProgressView(value: Double(sessionManager.restoringCurrent),
+                             total: Double(max(sessionManager.restoringTotal, 1)))
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .frame(width: 240)
+            }
+            .padding(32)
+            .background(.ultraThinMaterial)
+            .cornerRadius(16)
+            .shadow(color: .black.opacity(0.2), radius: 20)
+        }
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.25), value: sessionManager.isRestoring)
     }
 
     // MARK: - Status Bar
@@ -282,6 +389,7 @@ struct ContentView: View {
         case .busy: return .blue
         case .waitingApproval: return .orange
         case .initializing: return .yellow
+        case .stopped: return .secondary
         case .error: return .red
         case .terminated: return .gray
         }
@@ -320,10 +428,13 @@ struct ContentView: View {
                         }
                         // 작업 디렉토리도 CLI 타입별 설정으로 변경
                         newSessionCwd = config.cwd(for: newType)
-                        // 채널 서버는 Claude Code 전용
+                        // 채널/SDK 서버는 Claude Code 전용; Gemini/Codex 브릿지도 초기화
                         if newType != .claudeCode {
                             newSessionChannelEnabled = false
+                            newSessionSDKEnabled = false
                         }
+                        if newType != .gemini { newSessionGeminiStreamEnabled = false }
+                        if newType != .codex { newSessionCodexAppServerEnabled = false }
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -373,6 +484,7 @@ struct ContentView: View {
                         }
                         .onChange(of: newSessionChannelEnabled) { _, enabled in
                             if enabled {
+                                newSessionSDKEnabled = false  // 상호 배타
                                 detectChannelConfig()
                             } else {
                                 channelConfigFound = false
@@ -475,10 +587,165 @@ struct ContentView: View {
                             }
                         }
                     }
+
+                    // SDK 모드 설정 (Claude Code 전용)
+                    if newSessionCliType == .claudeCode {
+                        Toggle(isOn: $newSessionSDKEnabled) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Agent Mode")
+                                Text("Agent SDK 기반 — PTY 파싱 없이 안정적인 OpenAI 호환 API를 제공합니다.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .onChange(of: newSessionSDKEnabled) { _, enabled in
+                            // SDK와 Channel은 상호 배타
+                            if enabled {
+                                newSessionChannelEnabled = false
+                            }
+                        }
+
+                        if newSessionSDKEnabled {
+                            HStack {
+                                Text("Agent 포트")
+                                Spacer()
+                                TextField("", text: Binding(
+                                    get: { String(newSessionSDKPort) },
+                                    set: { if let v = Int($0) { newSessionSDKPort = v } }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                                .multilineTextAlignment(.trailing)
+                            }
+
+                            LabeledContent("모델") {
+                                Picker("", selection: $newSessionSDKModel) {
+                                    Text("기본값").tag("")
+                                    Section("Claude") {
+                                        Text("claude-sonnet-4-20250514").tag("claude-sonnet-4-20250514")
+                                        Text("claude-opus-4-20250514").tag("claude-opus-4-20250514")
+                                        Text("claude-haiku-4-20250514").tag("claude-haiku-4-20250514")
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+
+                            LabeledContent("Permission") {
+                                Picker("", selection: $newSessionSDKPermissionMode) {
+                                    Text("Accept Edits").tag("acceptEdits")
+                                    Text("Default").tag("default")
+                                    Text("Bypass").tag("bypassPermissions")
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 150)
+                            }
+
+                            // venv 경로 + 상태
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Python 환경")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    if sdkVenvReady {
+                                        Label("설치됨", systemImage: "checkmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundColor(.green)
+                                    } else {
+                                        Label("첫 실행 시 자동 설치", systemImage: "arrow.down.circle")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                    }
+                                }
+
+                                HStack(spacing: 4) {
+                                    TextField("venv 경로", text: $config.sdkVenvPath)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.caption)
+
+                                    Button {
+                                        let panel = NSOpenPanel()
+                                        panel.canChooseDirectories = true
+                                        panel.canChooseFiles = false
+                                        panel.allowsMultipleSelection = false
+                                        panel.prompt = "선택"
+                                        if panel.runModal() == .OK, let url = panel.url {
+                                            config.sdkVenvPath = url.path
+                                        }
+                                    } label: {
+                                        Image(systemName: "folder")
+                                    }
+                                    .controlSize(.small)
+
+                                    if config.sdkVenvPath != AppConfig.defaultSDKVenvPath {
+                                        Button {
+                                            config.sdkVenvPath = AppConfig.defaultSDKVenvPath
+                                        } label: {
+                                            Image(systemName: "arrow.counterclockwise")
+                                        }
+                                        .controlSize(.small)
+                                        .help("기본 경로로 복원")
+                                    }
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+
+                // Gemini stream-json 모드 (Gemini CLI 전용)
+                if newSessionCliType == .gemini {
+                    Toggle(isOn: $newSessionGeminiStreamEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Stream JSON Mode")
+                            Text("PTY 파싱 없이 --output-format stream-json으로 안정적인 API를 제공합니다.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if newSessionGeminiStreamEnabled {
+                        HStack {
+                            Text("브릿지 포트")
+                            Spacer()
+                            TextField("", text: Binding(
+                                get: { String(newSessionGeminiStreamPort) },
+                                set: { if let v = Int($0) { newSessionGeminiStreamPort = v } }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 80)
+                            .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+
+                // Codex app-server 모드 (Codex CLI 전용)
+                if newSessionCliType == .codex {
+                    Toggle(isOn: $newSessionCodexAppServerEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("App Server Mode")
+                            Text("PTY 파싱 없이 app-server --listen stdio://로 안정적인 API를 제공합니다.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if newSessionCodexAppServerEnabled {
+                        HStack {
+                            Text("브릿지 포트")
+                            Spacer()
+                            TextField("", text: Binding(
+                                get: { String(newSessionCodexAppServerPort) },
+                                set: { if let v = Int($0) { newSessionCodexAppServerPort = v } }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 80)
+                            .multilineTextAlignment(.trailing)
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)
-            .scrollDisabled(!newSessionChannelEnabled)
 
             // Bottom Actions
             HStack {
@@ -503,7 +770,15 @@ struct ContentView: View {
                             autoApprove: newSessionAutoApprove,
                             channelEnabled: newSessionCliType == .claudeCode ? newSessionChannelEnabled : false,
                             channelPort: newSessionChannelPort,
-                            channelServerName: newSessionChannelServerName
+                            channelServerName: newSessionChannelServerName,
+                            sdkEnabled: newSessionCliType == .claudeCode ? newSessionSDKEnabled : false,
+                            sdkPort: newSessionSDKPort,
+                            sdkModel: newSessionSDKModel.isEmpty ? nil : newSessionSDKModel,
+                            sdkPermissionMode: newSessionSDKPermissionMode,
+                            geminiStreamEnabled: newSessionCliType == .gemini ? newSessionGeminiStreamEnabled : false,
+                            geminiStreamPort: newSessionGeminiStreamPort,
+                            codexAppServerEnabled: newSessionCliType == .codex ? newSessionCodexAppServerEnabled : false,
+                            codexAppServerPort: newSessionCodexAppServerPort
                         )
                         _ = try? await sessionManager.createSession(config: sessionConfig)
                     }
@@ -516,7 +791,13 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(Divider(), alignment: .top)
         }
-        .frame(width: 450, height: newSessionChannelEnabled ? 540 : 420)
+        .frame(width: 450, height: newSessionChannelEnabled ? 580 : (newSessionSDKEnabled || newSessionGeminiStreamEnabled || newSessionCodexAppServerEnabled) ? 520 : 480)
+    }
+
+    /// SDK venv가 설치되어 있는지 확인
+    private var sdkVenvReady: Bool {
+        let pythonPath = (config.sdkVenvPath as NSString).appendingPathComponent("bin/python3")
+        return FileManager.default.isExecutableFile(atPath: pythonPath)
     }
 
     /// 세션 이름 중복 여부 (입력 중 실시간 체크)
@@ -679,13 +960,149 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Session Detail View
+
+struct SessionDetailView: View {
+    @ObservedObject var session: Session
+    @Environment(\.dismiss) private var dismiss
+
+    private let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .medium
+        return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 헤더
+            HStack {
+                Text("세션 상세 정보")
+                    .font(.headline)
+                Spacer()
+                Button("닫기") { dismiss() }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    detailSection("기본 정보") {
+                        detailRow("이름", session.name)
+                        detailRow("세션 ID", session.id)
+                        detailRow("상태", session.status.rawValue)
+                        detailRow("CLI 타입", session.config.cliType.displayName)
+                        detailRow("생성 시각", dateFormatter.string(from: session.createdAt))
+                        detailRow("메시지 수", "\(session.messageCount)")
+                    }
+
+                    detailSection("환경") {
+                        detailRow("작업 디렉토리", session.config.workingDirectory)
+                        detailRow("셸", session.config.shell)
+                        detailRow("자동 승인", session.config.autoApprove ? "켜짐" : "꺼짐")
+                        detailRow("유휴 타임아웃", "\(session.config.idleTimeout)초")
+                    }
+
+                    if session.isChannelMode {
+                        detailSection("Channel Server") {
+                            detailRow("포트", "\(session.config.channelPort)")
+                            detailRow("서버 이름", session.config.channelServerName)
+                            if let url = session.channelServerURL {
+                                detailRow("URL", url)
+                            }
+                        }
+                    }
+
+                    if session.isSDKMode {
+                        detailSection("Agent Server (SDK)") {
+                            detailRow("포트", "\(session.config.sdkPort)")
+                            detailRow("모델", session.config.sdkModel ?? "기본값")
+                            detailRow("퍼미션 모드", session.config.sdkPermissionMode)
+                            if let url = session.sdkServerURL {
+                                detailRow("URL", url)
+                            }
+                        }
+                    }
+
+                    if session.isGeminiStreamMode {
+                        detailSection("Gemini Bridge Server") {
+                            detailRow("포트", "\(session.config.geminiStreamPort)")
+                            if let url = session.geminiStreamServerURL {
+                                detailRow("URL", url)
+                            }
+                        }
+                    }
+
+                    if session.isCodexAppServerMode {
+                        detailSection("Codex Bridge Server") {
+                            detailRow("포트", "\(session.config.codexAppServerPort)")
+                            if let url = session.codexAppServerURL {
+                                detailRow("URL", url)
+                            }
+                        }
+                    }
+
+                    if let tunnelURL = session.tunnelURL {
+                        detailSection("Cloudflare Tunnel") {
+                            detailRow("URL", tunnelURL)
+                        }
+                    }
+                }
+                .padding()
+            }
+        }
+        .frame(width: 480, height: 520)
+    }
+
+    @ViewBuilder
+    private func detailSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+                .padding(.top, 16)
+                .padding(.bottom, 6)
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(8)
+        }
+    }
+
+    @ViewBuilder
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .frame(width: 130, alignment: .leading)
+            Text(value)
+                .font(.callout)
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        Divider().padding(.leading, 12)
+    }
+}
+
 // MARK: - Session Row
 
 struct SessionRow: View {
     @ObservedObject var session: Session
     var onClose: () -> Void
+    var onStop: (() -> Void)? = nil
+    var onStart: (() -> Void)? = nil
     @State private var isHovering = false
     @State private var showCloseAlert = false
+    @State private var showDetails = false
 
     var body: some View {
         HStack(alignment: .center) {
@@ -757,6 +1174,63 @@ struct SessionRow: View {
                     }
                     .help("Channel Server URL — 클릭하여 복사")
                 }
+
+                // SDK 서버 URL 표시
+                if session.isSDKMode, let url = session.sdkServerURL {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bolt.fill")
+                            .font(.caption2)
+                            .foregroundColor(.cyan)
+                        Text("Agent " + url)
+                            .font(.caption2)
+                            .foregroundColor(.cyan)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .onTapGesture {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                            }
+                    }
+                    .help("Agent Server URL — 클릭하여 복사")
+                }
+
+                // Gemini 브릿지 서버 URL 표시
+                if session.isGeminiStreamMode, let url = session.geminiStreamServerURL {
+                    HStack(spacing: 4) {
+                        Image(systemName: "waveform")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                        Text("Gemini " + url)
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .onTapGesture {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                            }
+                    }
+                    .help("Gemini Bridge Server URL — 클릭하여 복사")
+                }
+
+                // Codex 브릿지 서버 URL 표시
+                if session.isCodexAppServerMode, let url = session.codexAppServerURL {
+                    HStack(spacing: 4) {
+                        Image(systemName: "server.rack")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                        Text("Codex " + url)
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .onTapGesture {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url, forType: .string)
+                            }
+                    }
+                    .help("Codex Bridge Server URL — 클릭하여 복사")
+                }
             }
 
             Spacer()
@@ -778,6 +1252,42 @@ struct SessionRow: View {
                 isHovering = hovering
             }
         }
+        .contextMenu {
+            let isRunning = [Session.Status.ready, .busy, .waitingApproval, .initializing].contains(session.status)
+            // .stopped: 명시적 연결 끊기, .error: 시작 실패 — 둘 다 재연결 가능
+            let canReconnect = session.status == .stopped || session.status == .error
+
+            if isRunning, let onStop {
+                Button {
+                    onStop()
+                } label: {
+                    Label("연결 끊기", systemImage: "wifi.slash")
+                }
+            } else if canReconnect, let onStart {
+                Button {
+                    onStart()
+                } label: {
+                    Label("연결하기", systemImage: "wifi")
+                }
+            }
+
+            Button {
+                showDetails = true
+            } label: {
+                Label("상세 정보", systemImage: "info.circle")
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                showCloseAlert = true
+            } label: {
+                Label("세션 닫기", systemImage: "xmark.circle")
+            }
+        }
+        .sheet(isPresented: $showDetails) {
+            SessionDetailView(session: session)
+        }
         .alert("세션 종료", isPresented: $showCloseAlert) {
             Button("취소", role: .cancel) {}
             Button("종료", role: .destructive) {
@@ -794,6 +1304,7 @@ struct SessionRow: View {
         case .busy: return .blue
         case .waitingApproval: return .orange
         case .initializing: return .yellow
+        case .stopped: return .secondary
         case .error: return .red
         case .terminated: return .gray
         }

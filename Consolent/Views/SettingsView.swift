@@ -23,6 +23,12 @@ struct SettingsView: View {
     @State private var showLogCleanupConfirm = false
     @State private var selectedTab = 0
 
+    // 브릿지 탭 상태
+    @State private var bridgeVenvReady: Bool = Session.isBridgeVenvReady
+    @State private var isInstallingVenv: Bool = false
+    @State private var venvInstallError: String? = nil
+    @State private var venvInstallSuccess: Bool = false
+
     var body: some View {
         VStack(spacing: 0) {
             // 네이티브 설정 형태처럼 보이게 TabView 사용
@@ -44,6 +50,12 @@ struct SettingsView: View {
                         Label("터미널", systemImage: "terminal")
                     }
                     .tag(2)
+
+                bridgeTab
+                    .tabItem {
+                        Label("브릿지", systemImage: "cpu")
+                    }
+                    .tag(3)
             }
             .padding()
 
@@ -58,7 +70,12 @@ struct SettingsView: View {
             .padding()
             .background(VisualEffectView(material: .windowBackground, blendingMode: .withinWindow))
         }
-        .frame(width: 550, height: 450)
+        .frame(width: 550, height: 500)
+        .onReceive(NotificationCenter.default.publisher(for: AppDelegate.openSettingsRequested)) { notification in
+            if let tab = notification.object as? Int {
+                selectedTab = tab
+            }
+        }
     }
 
     // MARK: - General Tab
@@ -207,21 +224,66 @@ struct SettingsView: View {
                             .fill(apiServer.serverError != nil ? Color.red : (apiServer.isRunning ? Color.green : Color.gray))
                             .frame(width: 10, height: 10)
                             .shadow(color: apiServer.serverError != nil ? .red.opacity(0.4) : (apiServer.isRunning ? .green.opacity(0.4) : .clear), radius: 2)
-                        
+
                         Text(apiServer.serverError != nil ? "API 서버 에러" : (apiServer.isRunning ? "API 서버 실행중" : "API 서버 중지됨"))
                             .fontWeight(.medium)
-                            
+
                         Spacer()
                         Toggle("", isOn: $config.apiEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
                     }
-                    
-                    if let error = apiServer.serverError {
+
+                    if let error = apiServer.serverError, apiServer.portConflict == nil {
                         Text(error)
                             .font(.caption)
                             .foregroundColor(.red)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    // 포트 충돌 UI
+                    if let conflict = apiServer.portConflict {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("포트 \(conflict.port) 충돌")
+                                    .fontWeight(.semibold)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\"\(conflict.displayName)\" 이(가) 포트 \(conflict.port)를 사용 중입니다.")
+                                    .font(.callout)
+                                if !conflict.displayCommand.isEmpty {
+                                    Text(conflict.displayCommand)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Text("PID: \(conflict.pids.map { String($0) }.joined(separator: ", "))")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack(spacing: 10) {
+                                Button("강제 종료") {
+                                    apiServer.killConflictingProcesses()
+                                    apiServer.retryStart(config: config)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+
+                                Button("포트 \(conflict.suggestedPort) 사용") {
+                                    config.apiPort = conflict.suggestedPort
+                                    apiServer.portConflict = nil
+                                    apiServer.retryStart(config: config)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                        .padding()
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
                     }
                 }
                 .padding(.vertical, 4)
@@ -291,6 +353,22 @@ struct SettingsView: View {
                     }
                 }
                 .padding(.top, 4)
+            }
+
+            Section("자동 강제 복구") {
+                Toggle(isOn: $config.autoForceRecovery) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("자동 강제 복구 모드")
+                        Text("포트 충돌 등 시작 오류 발생 시 사용자 확인 없이 기존 프로세스를 강제 종료하고 자동으로 재시작합니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        if config.autoForceRecovery {
+                            Text("⚡ 활성화됨 — 맥 재부팅 후에도 세션이 자동으로 복구됩니다.")
+                                .font(.caption)
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
             }
 
             cloudflareSection
@@ -386,6 +464,176 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Bridge Tab
+
+    private var bridgeTab: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SDK / Gemini / Codex 브릿지 서버는 Python 가상환경을 공유합니다.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("세션을 만들기 전에 미리 설치해두면 첫 세션 시작이 빨라집니다.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 2)
+            } header: {
+                Text("Python 가상환경 (공용)")
+            }
+
+            Section("설치 경로") {
+                LabeledContent("가상환경 위치") {
+                    HStack {
+                        TextField("", text: $config.sdkVenvPath)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.caption, design: .monospaced))
+                        Button("찾아보기…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            if panel.runModal() == .OK, let url = panel.url {
+                                config.sdkVenvPath = url.path
+                                bridgeVenvReady = Session.isBridgeVenvReady
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                LabeledContent("상태") {
+                    HStack(spacing: 6) {
+                        if bridgeVenvReady {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("설치됨")
+                                .foregroundColor(.green)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundColor(.secondary)
+                            Text("설치 필요")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                if let error = venvInstallError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if venvInstallSuccess && bridgeVenvReady {
+                    Label("설치 완료!", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+
+                HStack {
+                    Button {
+                        isInstallingVenv = true
+                        venvInstallError = nil
+                        venvInstallSuccess = false
+                        Task {
+                            do {
+                                try await Session.installBridgeVenv()
+                                await MainActor.run {
+                                    bridgeVenvReady = Session.isBridgeVenvReady
+                                    isInstallingVenv = false
+                                    venvInstallSuccess = true
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    venvInstallError = error.localizedDescription
+                                    isInstallingVenv = false
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if isInstallingVenv {
+                                ProgressView().controlSize(.mini)
+                            }
+                            Text(isInstallingVenv ? "설치 중..." : (bridgeVenvReady ? "재설치" : "지금 설치"))
+                        }
+                    }
+                    .disabled(isInstallingVenv)
+
+                    Button("상태 새로고침") {
+                        bridgeVenvReady = Session.isBridgeVenvReady
+                        venvInstallSuccess = false
+                    }
+                    .disabled(isInstallingVenv)
+                }
+            }
+
+            Section("브릿지 출력 레벨") {
+                Picker("출력 레벨", selection: $config.bridgeLogLevel) {
+                    Text("오류만").tag("error")
+                    Text("정보 (기본)").tag("info")
+                    Text("디버그 (원시 출력 포함)").tag("debug")
+                }
+                .pickerStyle(.menu)
+
+                Group {
+                    switch config.bridgeLogLevel {
+                    case "error":
+                        Label("❌ 오류 메시지만 표시합니다.", systemImage: "info.circle")
+                    case "debug":
+                        Label("[Gemini 원시 출력] 등 진단 메시지를 모두 표시합니다.", systemImage: "info.circle")
+                    default:
+                        Label("서버 시작·종료 등 상태 메시지를 표시합니다.", systemImage: "info.circle")
+                    }
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+                Text("변경은 새 세션을 시작할 때부터 적용됩니다.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("API 라우팅") {
+                Toggle(isOn: $config.proxyBridgeRequests) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("브릿지 요청 프록시")
+                        Text("켜면 localhost:9999로 보낸 요청을 Consolent이 자동으로 Agent/브릿지 서버로 포워딩합니다. 꺼져 있으면 410 Gone + 브릿지 URL을 반환합니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if config.proxyBridgeRequests {
+                    Label("단일 엔드포인트 모드: localhost:\(config.apiPort)으로 모든 세션 접근 가능", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                } else {
+                    Label("직접 연결 모드: Agent/브릿지 세션은 각 브릿지 서버 URL로 직접 요청", systemImage: "arrow.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section("포함 패키지") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("claude-agent-sdk", systemImage: "shippingbox")
+                        .font(.caption)
+                    Label("aiohttp", systemImage: "shippingbox")
+                        .font(.caption)
+                }
+                .foregroundColor(.secondary)
+                Text("설치 시 uv 또는 pip을 자동으로 사용합니다. uv가 있으면 Python 3.12를 자동 설치합니다.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            bridgeVenvReady = Session.isBridgeVenvReady
+        }
     }
 
     // MARK: - Cloudflare Tunnel (세션별)
