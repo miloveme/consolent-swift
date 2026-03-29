@@ -38,12 +38,36 @@ struct GeminiAdapter: CLIAdapter {
         ) != nil
         if hasProcessing { return false }
 
+        // trust 다이얼로그 표시 중이면 완료 아님 (승인 대기)
+        if screenBuffer.contains("Do you trust the files in this folder?")
+            || screenBuffer.contains("Trust folder")
+            || screenBuffer.contains("Trust parent folder") {
+            return false
+        }
+
         // 입력 필드 플레이스홀더가 보이면 = Gemini가 입력 대기 상태
         let hasInputPlaceholder = screenBuffer.contains("Type your message")
         // 플레이스홀더가 없더라도 입력 영역(▀▀▀/▄▄▄) + 상태바가 있으면 완료
         let hasModel = screenBuffer.contains("/model")
         let hasBlockBar = screenBuffer.contains("▀▀▀") || screenBuffer.contains("▄▄▄")
         return hasInputPlaceholder || (hasModel && hasBlockBar)
+    }
+
+    /// Gemini 전용 승인 패턴 — trust 다이얼로그 포함
+    var approvalPatterns: [String] {
+        [
+            // 기본 y/n 패턴 (공통)
+            "\\(y/n\\)\\s*$",
+            "\\(Y/n\\)\\s*$",
+            "\\[y/N\\]\\s*$",
+            "\\[Y/n\\]\\s*$",
+            "Do you want to proceed\\?",
+            "Allow .+\\?\\s*\\(y\\)",
+            "Press Enter to continue",
+            // Gemini CLI trust 다이얼로그
+            "Do you trust the files in this folder\\?",
+            "Trust folder \\(",
+        ]
     }
 
     func buildCommand(binaryPath: String, args: [String], autoApprove: Bool) -> String {
