@@ -33,13 +33,24 @@ final class MCPHandler {
         // POST /mcp — MCP Streamable HTTP 엔드포인트
         router.post("mcp") { [self] req -> Response in
             let jsonRPC = try req.content.decode(JSONRPCRequest.self)
-            let result = await handleRequest(jsonRPC)
 
             // notification (id == nil) 이면 204 No Content
-            guard let _ = jsonRPC.id else {
+            guard let id = jsonRPC.id else {
+                _ = await handleRequest(jsonRPC)
                 return Response(status: .noContent)
             }
 
+            // tools/call + stream: true 이면 SSE 스트리밍 응답
+            if jsonRPC.method == "tools/call",
+               case .object(let params)? = jsonRPC.params,
+               case .string(let toolName)? = params["name"],
+               toolName == "session_send_message",
+               case .object(let args)? = params["arguments"],
+               args["stream"]?.boolValue == true {
+                return try await handleStreamingToolCall(id: id, arguments: args)
+            }
+
+            let result = await handleRequest(jsonRPC)
             let encoder = JSONEncoder()
             encoder.keyEncodingStrategy = .convertToSnakeCase
             let data = try encoder.encode(result)
@@ -53,13 +64,134 @@ final class MCPHandler {
 
         // GET /mcp — SSE 엔드포인트 (Streamable HTTP 스펙, 현재는 미구현)
         router.get("mcp") { req -> Response in
-            // SSE 스트림은 서버→클라이언트 알림용. 현재는 도구 호출만 지원하므로 비활성.
             return Response(
                 status: .methodNotAllowed,
                 headers: ["Content-Type": "application/json"],
                 body: .init(string: #"{"error":"SSE stream not implemented. Use POST /mcp for tool calls."}"#)
             )
         }
+    }
+
+    // MARK: - Streaming Tool Call
+
+    /// session_send_message의 스트리밍 응답.
+    /// MCP Streamable HTTP 스펙에 따라 SSE로 progress notification + 최종 result를 전송한다.
+    private func handleStreamingToolCall(id: JSONRPCId, arguments: [String: JSONValue]) async throws -> Response {
+        let session: Session
+        do {
+            session = try resolveSession(arguments)
+        } catch {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32602, message: error.localizedDescription)
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        guard let text = arguments["text"]?.stringValue, !text.isEmpty else {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32602, message: "text는 필수 파라미터입니다.")
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        if session.status == .stopped || session.status == .error {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32603, message: "세션이 \(session.status.rawValue) 상태입니다. session_start로 재시작 후 시도하세요.")
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        let timeout = TimeInterval(arguments["timeout"]?.intValue ?? 300)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+
+        let response = Response(
+            status: .ok,
+            headers: [
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            ]
+        )
+
+        response.body = .init(managedAsyncStream: { writer in
+            let stream = session.sendMessageStreaming(text: text, timeout: timeout)
+            var fullText = ""
+
+            for await event in stream {
+                switch event {
+                case .delta(let chunk):
+                    fullText += chunk
+                    // MCP progress notification — 델타 청크를 실시간 전송
+                    let notification: [String: Any] = [
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": [
+                            "progressToken": "\(id)",
+                            "progress": chunk,
+                            "total": ""
+                        ]
+                    ]
+                    if let data = try? JSONSerialization.data(withJSONObject: notification),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+
+                case .done:
+                    // 최종 tools/call result
+                    let finalResult = JSONRPCResponse(
+                        jsonrpc: "2.0", id: id,
+                        result: .object([
+                            "content": .array([
+                                .object(["type": .string("text"), "text": .string(fullText)])
+                            ])
+                        ]),
+                        error: nil
+                    )
+                    if let data = try? encoder.encode(finalResult),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+
+                case .error(let msg):
+                    let errorResponse = JSONRPCResponse(
+                        jsonrpc: "2.0", id: id, result: nil,
+                        error: JSONRPCError(code: -32603, message: msg)
+                    )
+                    if let data = try? encoder.encode(errorResponse),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+                }
+            }
+        })
+
+        return response
     }
 
     // MARK: - JSON-RPC Dispatch
@@ -242,13 +374,13 @@ final class MCPHandler {
             ),
             MCPToolDefinition(
                 name: "session_send_message",
-                description: "세션에 메시지를 보내고 응답을 기다립니다. CLI 도구가 응답을 완료할 때까지 대기하는 동기 호출입니다. 타임아웃 기본값은 300초입니다.",
+                description: "세션에 메시지를 보내고 응답을 기다립니다. stream: true이면 SSE로 델타를 실시간 전송합니다. 타임아웃 기본값은 300초입니다.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "session_id": .object([
                             "type": .string("string"),
-                            "description": .string("메시지를 보낼 세션 ID")
+                            "description": .string("메시지를 보낼 세션 이름 또는 ID")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -257,6 +389,10 @@ final class MCPHandler {
                         "timeout": .object([
                             "type": .string("integer"),
                             "description": .string("응답 대기 타임아웃 (초). 기본: 300")
+                        ]),
+                        "stream": .object([
+                            "type": .string("boolean"),
+                            "description": .string("SSE 스트리밍 모드. true이면 MCP progress notification으로 델타를 실시간 전송. 기본: false")
                         ])
                     ]),
                     "required": .array([.string("session_id"), .string("text")])
