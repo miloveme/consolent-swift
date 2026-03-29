@@ -677,22 +677,7 @@ claude mcp add --transport http consolent http://localhost:9999/mcp \
 
 #### Claude Desktop
 
-`~/Library/Application Support/Claude/claude_desktop_config.json`에 추가:
-
-```json
-{
-  "mcpServers": {
-    "consolent": {
-      "url": "http://localhost:9999/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-> Claude Desktop은 `"type"` 필드 없이 `"url"`만 사용합니다. Claude Code의 `~/.claude.json` 포맷과 다르므로 주의하세요.
+> Claude Desktop은 현재 Streamable HTTP 트랜스포트를 지원하지 않습니다. Consolent MCP 서버는 Claude Code CLI에서만 사용할 수 있습니다.
 
 ### 제공 도구
 
