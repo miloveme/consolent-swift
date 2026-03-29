@@ -910,15 +910,16 @@ final class MCPHandler {
         return value
     }
 
-    /// 세션을 ID 또는 이름으로 찾는다. session_id 파라미터에 ID나 이름 모두 사용 가능.
+    /// 세션을 이름 또는 ID로 찾는다. session_id 파라미터에 이름이나 ID 모두 사용 가능.
+    /// 이름이 더 일반적이므로 이름을 먼저 시도하고, 없으면 ID로 폴백한다.
     private func resolveSession(_ args: [String: JSONValue], key: String = "session_id") throws -> Session {
         let value = try requireString(args, key)
-        // 1. ID로 먼저 시도
-        if let session = sessionManager.getSession(id: value) {
+        // 1. 이름으로 먼저 시도
+        if let session = sessionManager.getSession(name: value) {
             return session
         }
-        // 2. 이름으로 시도
-        if let session = sessionManager.getSession(name: value) {
+        // 2. ID로 폴백
+        if let session = sessionManager.getSession(id: value) {
             return session
         }
         throw MCPError.sessionNotFound(value)
