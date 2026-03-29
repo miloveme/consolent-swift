@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -138,15 +139,52 @@ final class SessionManager: ObservableObject {
         guard !entries.isEmpty else { return }
 
         // 0단계: 작업 디렉토리 접근 권한 사전 확보 (TCC 프리플라이트)
-        // 복원 오버레이가 표시되기 전에 macOS 파일 접근 권한 다이얼로그를 먼저 처리한다.
-        // 다이얼로그는 커널 레벨에서 파일 접근을 블록하므로, 사용자 응답 후 자동으로 진행된다.
         await preflightDirectoryAccess(entries: entries)
 
+        // 0.5단계: 세션별 충돌 확인
+        // - 이름 동일 + 설정 동일 → skip (이미 복원된 것과 같음)
+        // - 이름 동일 + 설정 다름 → 사용자에게 대치 여부 확인
+        // - 이름 없음 → 그냥 복원
+        var entriesToRestore: [PersistedSessionEntry] = []
+        for entry in entries {
+            let entryName = entry.config.name ?? entry.config.cliType.rawValue
+            if let existing = getSession(name: entryName) {
+                if existing.config.hasSameEffectiveConfig(as: entry.config) {
+                    print("[SessionManager] 세션 '\(entryName)' 이미 존재 (동일 설정), 복원 skip")
+                } else {
+                    // 설정이 다른 경우 → 사용자 확인
+                    let replace = await MainActor.run {
+                        let alert = NSAlert()
+                        alert.messageText = "세션 충돌: '\(entryName)'"
+                        alert.informativeText = "저장된 세션과 현재 세션의 설정이 다릅니다.\n저장된 세션으로 대치하면 현재 세션이 종료됩니다."
+                        alert.addButton(withTitle: "대치")
+                        alert.addButton(withTitle: "건너뛰기")
+                        alert.alertStyle = .warning
+                        return alert.runModal() == .alertFirstButtonReturn
+                    }
+                    if replace {
+                        print("[SessionManager] 세션 '\(entryName)' 충돌, 사용자가 대치 선택 → 기존 세션 제거")
+                        await MainActor.run { deleteSession(id: existing.id) }
+                        entriesToRestore.append(entry)
+                    } else {
+                        print("[SessionManager] 세션 '\(entryName)' 충돌, 사용자가 건너뛰기 선택")
+                    }
+                }
+            } else {
+                entriesToRestore.append(entry)
+            }
+        }
+        guard !entriesToRestore.isEmpty else {
+            saveToStorage()
+            return
+        }
+
         // 1단계: 모든 세션 객체를 .stopped 상태로 등록 → UI에 즉시 전부 표시
+        let entriesToRestoreSnapshot = entriesToRestore
         let (channelSessionsToStart, otherSessionsToStart) = await MainActor.run { () -> ([Session], [Session]) in
             var channelSessionsToStart: [Session] = []
             var otherSessionsToStart: [Session] = []
-            for entry in entries {
+            for entry in entriesToRestoreSnapshot {
                 guard let session = registerRestoredSession(config: entry.config) else {
                     print("[SessionManager] 세션 복원 등록 실패 (\(entry.config.name ?? entry.config.cliType.rawValue)): 최대 세션 수 초과")
                     continue
@@ -217,6 +255,9 @@ final class SessionManager: ObservableObject {
                 print("[SessionManager] 채널 세션 복원 실패 (\(session.name)): \(error)")
             }
         }
+
+        // 복원 완료 후 파일↔메모리 상태 동기화
+        saveToStorage()
     }
 
     // MARK: - Session CRUD
