@@ -272,6 +272,18 @@ final class MCPHandler {
                             "items": .object(["type": .string("string")]),
                             "description": .string("CLI에 전달할 추가 인자")
                         ]),
+                        "channel_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("채널 서버 모드 활성화 (claude-code 전용). MCP 채널 서버로 직접 API 제공. 기본: false")
+                        ]),
+                        "channel_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("채널 서버 HTTP 포트. 기본: 8787")
+                        ]),
+                        "channel_server_name": .object([
+                            "type": .string("string"),
+                            "description": .string("~/.claude.json의 mcpServers 키. 기본: openai-compat")
+                        ]),
                         "sdk_enabled": .object([
                             "type": .string("boolean"),
                             "description": .string("Agent SDK 브릿지 모드 활성화 (claude-code 전용). PTY 없이 Claude Agent SDK로 직접 통신. 기본: false")
@@ -607,11 +619,12 @@ final class MCPHandler {
             throw MCPError.invalidParameter("cli_type", "지원하지 않는 CLI 타입: \(cliTypeStr). 가능한 값: claude-code, codex, gemini")
         }
 
-        let sdkEnabled = args["sdk_enabled"]?.boolValue ?? false
-        let geminiStreamEnabled = args["gemini_stream_enabled"]?.boolValue ?? false
-        let codexAppServerEnabled = args["codex_app_server_enabled"]?.boolValue ?? false
+        let channelEnabled = (cliType == .claudeCode) ? (args["channel_enabled"]?.boolValue ?? false) : false
+        let sdkEnabled = (cliType == .claudeCode) ? (args["sdk_enabled"]?.boolValue ?? false) : false
+        let geminiStreamEnabled = (cliType == .gemini) ? (args["gemini_stream_enabled"]?.boolValue ?? false) : false
+        let codexAppServerEnabled = (cliType == .codex) ? (args["codex_app_server_enabled"]?.boolValue ?? false) : false
 
-        var config = Session.Config(
+        let config = Session.Config(
             name: args["name"]?.stringValue,
             workingDirectory: args["working_directory"]?.stringValue ?? AppConfig.shared.cwd(for: cliType),
             shell: AppConfig.shared.defaultShell,
@@ -620,9 +633,9 @@ final class MCPHandler {
             autoApprove: args["auto_approve"]?.boolValue ?? false,
             idleTimeout: AppConfig.shared.sessionIdleTimeout,
             env: nil,
-            channelEnabled: false,
-            channelPort: 8787,
-            channelServerName: "openai-compat",
+            channelEnabled: channelEnabled,
+            channelPort: args["channel_port"]?.intValue ?? 8787,
+            channelServerName: args["channel_server_name"]?.stringValue ?? "openai-compat",
             sdkEnabled: sdkEnabled,
             sdkPort: args["sdk_port"]?.intValue ?? 8788,
             sdkModel: args["sdk_model"]?.stringValue,
@@ -632,6 +645,7 @@ final class MCPHandler {
             codexAppServerEnabled: codexAppServerEnabled,
             codexAppServerPort: args["codex_app_server_port"]?.intValue ?? 8790
         )
+
         let session = try await sessionManager.createSession(config: config)
 
         var lines = [
@@ -642,7 +656,10 @@ final class MCPHandler {
             "- cli_type: \(cliTypeStr)",
             "- working_directory: \(config.workingDirectory)",
         ]
-        if sdkEnabled, let url = session.sdkServerURL {
+        if channelEnabled, let url = session.channelServerURL {
+            lines.append("- mode: 채널 서버")
+            lines.append("- channel_url: \(url)/v1")
+        } else if sdkEnabled, let url = session.sdkServerURL {
             lines.append("- mode: Agent SDK 브릿지")
             lines.append("- bridge_url: \(url)/v1")
         } else if geminiStreamEnabled, let url = session.geminiStreamServerURL {
