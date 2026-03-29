@@ -421,6 +421,24 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
+                name: "session_rename",
+                description: "세션 이름을 변경합니다. 이름은 OpenAI 호환 API의 model 필드로도 사용되므로 변경 시 클라이언트 설정도 함께 업데이트하세요.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("변경할 세션 이름 또는 ID")
+                        ]),
+                        "new_name": .object([
+                            "type": .string("string"),
+                            "description": .string("새 세션 이름 (중복 불가)")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id"), .string("new_name")])
+                ])
+            ),
+            MCPToolDefinition(
                 name: "session_output",
                 description: "세션의 현재 터미널 출력 버퍼를 조회합니다. ANSI 코드가 제거된 텍스트와 원시 출력 모두 반환합니다.",
                 inputSchema: .object([
@@ -556,6 +574,8 @@ final class MCPHandler {
             return try toolSessionGet(arguments)
         case "session_delete":
             return try await toolSessionDelete(arguments)
+        case "session_rename":
+            return try toolSessionRename(arguments)
         case "session_stop":
             return try toolSessionStop(arguments)
         case "session_start":
@@ -702,6 +722,13 @@ final class MCPHandler {
         }
 
         return mcpTextResult("세션 \(session.name) (\(session.id)) 삭제 완료.")
+    }
+
+    private func toolSessionRename(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        let newName = try requireString(args, "new_name")
+        try sessionManager.renameSession(id: session.id, newName: newName)
+        return mcpTextResult("세션 이름 변경 완료: '\(session.name)' → '\(newName)'")
     }
 
     private func toolSessionStop(_ args: [String: JSONValue]) throws -> JSONValue {
