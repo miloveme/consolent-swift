@@ -5,11 +5,12 @@
 Consolent은 Claude Code, Codex CLI, Gemini CLI 등 터미널 기반 AI 코딩 에이전트를 HTTP/WebSocket API로 제어합니다. PTY(가상 터미널) 직접 구동 외에도, Agent SDK·채널 서버·브릿지 모드를 통해 각 CLI에 최적화된 방식으로 연결할 수 있습니다.
 
 ```mermaid
-flowchart LR
-    App["**Your App**\n웹앱 / 봇 / 스크립트\nOpenAI SDK"]
+flowchart TB
+    App["**Your App**\n웹앱 / 봇 / 스크립트 / OpenAI SDK"]
 
     subgraph Consolent
-        API["API Server\n(Vapor)"]
+        direction TB
+        API["API Server (Vapor)"]
         SM["Session Manager"]
         API --> SM
     end
@@ -22,7 +23,6 @@ flowchart LR
     SM --> AG["Agent 모드 :8788\nsdk_bridge.py\n(Claude Agent SDK)"]
     SM --> GB["Gemini 브릿지 :8789\ngemini_bridge.py\n(gemini -p)"]
     SM --> CB["Codex 브릿지 :8790\ncodex_bridge.py\n(JSON-RPC stdio)"]
-
 ```
 
 ## 왜 Consolent인가
