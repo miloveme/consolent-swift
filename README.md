@@ -9,18 +9,17 @@ flowchart TB
     App["**Your App**\n웹앱 / 봇 / 스크립트 / OpenAI SDK"]
     MCP["**MCP Client**\nClaude Code 등"]
 
+    App -- "/v1/chat/completions" --> API
+    API -- "JSON / SSE" --> App
+    MCP -- "POST /mcp" --> API
+    API -- "JSON-RPC 2.0" --> MCP
+
     subgraph Consolent
         direction TB
         API["API Server (Vapor)"]
         SM["Session Manager"]
         API --> SM
     end
-
-    App -- "/v1/chat/completions" --> API
-    API -- "JSON / SSE" --> App
-
-    MCP -- "POST /mcp\n(MCP 2025-03-26)" --> API
-    API -- "JSON-RPC 2.0" --> MCP
 
     SM --> PTY["PTY 모드\nclaude / gemini / codex\n(TUI 파싱)"]
     SM --> CH["채널 서버 모드 :8787\nClaude Code + MCP\n(@miloveme/cc-api)"]
