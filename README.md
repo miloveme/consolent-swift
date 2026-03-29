@@ -23,10 +23,6 @@ flowchart LR
     SM --> GB["Gemini 브릿지 :8789\ngemini_bridge.py\n(gemini -p)"]
     SM --> CB["Codex 브릿지 :8790\ncodex_bridge.py\n(JSON-RPC stdio)"]
 
-    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> CH
-    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> AG
-    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> GB
-    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> CB
 ```
 
 ## 왜 Consolent인가
