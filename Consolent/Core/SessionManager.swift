@@ -123,8 +123,14 @@ final class SessionManager: ObservableObject {
     /// 앱 시작 시 1회 호출.
     /// - PTY/브릿지 세션: 동시에 시작
     /// - Channel 세션: 순차 시작 (UI 잠금 + 진행 표시)
-    func restoreFromStorage() async {
-        guard let data = try? Data(contentsOf: Self.sessionsStoreURL) else { return }
+    /// conflictResolver: 세션 이름, 기존 config, 저장된 config → 대치 여부 반환.
+    /// nil이면 NSAlert를 표시한다. 테스트에서 주입하여 UI 없이 동작 검증 가능.
+    func restoreFromStorage(
+        from url: URL? = nil,
+        conflictResolver: ((String, Session.Config, Session.Config) async -> Bool)? = nil
+    ) async {
+        let storeURL = url ?? Self.sessionsStoreURL
+        guard let data = try? Data(contentsOf: storeURL) else { return }
 
         // 신규 포맷(PersistedSessionEntry) 우선 시도, 실패 시 구 포맷(Session.Config) 폴백
         let entries: [PersistedSessionEntry]
@@ -152,15 +158,20 @@ final class SessionManager: ObservableObject {
                 if existing.config.hasSameEffectiveConfig(as: entry.config) {
                     print("[SessionManager] 세션 '\(entryName)' 이미 존재 (동일 설정), 복원 skip")
                 } else {
-                    // 설정이 다른 경우 → 사용자 확인
-                    let replace = await MainActor.run {
-                        let alert = NSAlert()
-                        alert.messageText = "세션 충돌: '\(entryName)'"
-                        alert.informativeText = "저장된 세션과 현재 세션의 설정이 다릅니다.\n저장된 세션으로 대치하면 현재 세션이 종료됩니다."
-                        alert.addButton(withTitle: "대치")
-                        alert.addButton(withTitle: "건너뛰기")
-                        alert.alertStyle = .warning
-                        return alert.runModal() == .alertFirstButtonReturn
+                    // 설정이 다른 경우 → 사용자 확인 (또는 주입된 resolver 사용)
+                    let replace: Bool
+                    if let resolver = conflictResolver {
+                        replace = await resolver(entryName, existing.config, entry.config)
+                    } else {
+                        replace = await MainActor.run {
+                            let alert = NSAlert()
+                            alert.messageText = "세션 충돌: '\(entryName)'"
+                            alert.informativeText = "저장된 세션과 현재 세션의 설정이 다릅니다.\n저장된 세션으로 대치하면 현재 세션이 종료됩니다."
+                            alert.addButton(withTitle: "대치")
+                            alert.addButton(withTitle: "건너뛰기")
+                            alert.alertStyle = .warning
+                            return alert.runModal() == .alertFirstButtonReturn
+                        }
                     }
                     if replace {
                         print("[SessionManager] 세션 '\(entryName)' 충돌, 사용자가 대치 선택 → 기존 세션 제거")
