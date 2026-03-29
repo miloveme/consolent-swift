@@ -501,6 +501,34 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
+                name: "session_tunnel_start",
+                description: "세션에 Cloudflare Quick Tunnel을 시작합니다. 터널이 연결되면 외부에서 접근 가능한 URL이 생성됩니다. session_get으로 tunnel_url을 확인할 수 있습니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("터널을 시작할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_tunnel_stop",
+                description: "세션의 Cloudflare Quick Tunnel을 중지합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("터널을 중지할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
                 name: "config_get",
                 description: "Consolent 앱의 현재 설정을 조회합니다. API 포트, 로그 레벨, CLI 기본값, 터미널 설정 등 모든 설정을 반환합니다.",
                 inputSchema: .object([
@@ -602,6 +630,10 @@ final class MCPHandler {
             return try toolSessionApprove(arguments)
         case "session_pending":
             return try toolSessionPending(arguments)
+        case "session_tunnel_start":
+            return try toolSessionTunnelStart(arguments)
+        case "session_tunnel_stop":
+            return try toolSessionTunnelStop(arguments)
         case "config_get":
             return await toolConfigGet()
         case "config_update":
@@ -712,6 +744,10 @@ final class MCPHandler {
         ]
 
         // 모드 정보
+        if let tunnelUrl = session.tunnelURL {
+            lines.append("- tunnel_url: \(tunnelUrl)")
+        }
+
         if session.isBridgeMode, let url = session.bridgeServerURL {
             lines.append("- mode: 브릿지")
             lines.append("- bridge_url: \(url)/v1")
@@ -833,6 +869,26 @@ final class MCPHandler {
         } else {
             return mcpTextResult("대기 중인 승인 요청이 없습니다.")
         }
+    }
+
+    // MARK: - Tunnel Tools
+
+    private func toolSessionTunnelStart(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        guard session.status != .terminated else {
+            throw MCPError.sessionNotReady(session.id, "terminated")
+        }
+        sessionManager.startTunnel(sessionId: session.id)
+        return mcpTextResult("""
+        터널 시작 요청 완료. 연결에 수 초가 걸릴 수 있습니다.
+        session_get(session_id: "\(session.name)")으로 tunnel_url을 확인하세요.
+        """)
+    }
+
+    private func toolSessionTunnelStop(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        sessionManager.stopTunnel(sessionId: session.id)
+        return mcpTextResult("세션 '\(session.name)' 터널 중지 완료.")
     }
 
     // MARK: - Config Tools
