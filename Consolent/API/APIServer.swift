@@ -849,10 +849,14 @@ final class APIServer: ObservableObject {
         urlReq.httpMethod = "POST"
         urlReq.httpBody = bodyData
         urlReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // 브릿지 서버는 인증 불필요 (로컬 전용), Authorization 헤더는 전달하지 않음
+        // 브릿지 서버 인증: Consolent API 키를 그대로 전달 (브릿지 서버가 동일 키로 검증)
+        if let auth = req.headers["Authorization"].first {
+            urlReq.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
         urlReq.timeoutInterval = 600
 
         if streaming {
+            let streamingRequest = urlReq
             // SSE 스트리밍: 브릿지 서버의 이벤트 라인을 클라이언트에 그대로 전달
             let response = Response(
                 status: .ok,
@@ -866,7 +870,7 @@ final class APIServer: ObservableObject {
             )
 
             response.body = .init(managedAsyncStream: { writer in
-                let (asyncBytes, _) = try await URLSession.shared.bytes(for: urlReq)
+                let (asyncBytes, _) = try await URLSession.shared.bytes(for: streamingRequest)
                 for try await line in asyncBytes.lines {
                     // "data: ..." 라인을 그대로 포워딩
                     var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 2)
