@@ -834,9 +834,10 @@ final class MCPHandler {
 
     private func toolSessionRename(_ args: [String: JSONValue]) throws -> JSONValue {
         let session = try resolveSession(args)
+        let oldName = session.name
         let newName = try requireString(args, "new_name")
         try sessionManager.renameSession(id: session.id, newName: newName)
-        return mcpTextResult("세션 이름 변경 완료: '\(session.name)' → '\(newName)'")
+        return mcpTextResult("세션 이름 변경 완료: '\(oldName)' → '\(newName)'")
     }
 
     private func toolSessionStop(_ args: [String: JSONValue]) throws -> JSONValue {
