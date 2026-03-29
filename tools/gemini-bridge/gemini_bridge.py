@@ -348,8 +348,8 @@ class GeminiBridge:
             yield chunk
 
     def _build_prompt(self, system_prompt: Optional[str], user_prompt: str) -> str:
-        if system_prompt:
-            return f"[System: {system_prompt}]\n\n{user_prompt}"
+        # Gemini CLI는 별도 system 프롬프트 설정을 지원하지 않으므로 user_prompt만 전달.
+        # [System: ...] prefix를 붙이면 Gemini가 이를 응답에 echo하는 버그가 있음.
         return user_prompt
 
     # ------------------------------------------------------------------
@@ -468,6 +468,11 @@ class GeminiBridge:
                 _emit("system", f"❌ Gemini 오류: {err_msg}")
                 raise RuntimeError(err_msg)
             else:
+                # user/input 타입은 Gemini가 입력을 echo하는 이벤트 — 무시
+                if etype in ("user", "input", "human"):
+                    continue
+                if event.get("role") in ("user", "human"):
+                    continue
                 # 알 수 없는 타입 — 텍스트 추출 시도
                 text = _extract_text_from_event(event)
                 if text:
@@ -540,6 +545,11 @@ class GeminiBridge:
                 _emit("system", f"❌ Gemini 오류: {err_msg}")
                 raise RuntimeError(err_msg)
             else:
+                # user/input 타입은 Gemini가 입력을 echo하는 이벤트 — 무시
+                if etype in ("user", "input", "human"):
+                    continue
+                if event.get("role") in ("user", "human"):
+                    continue
                 # 알 수 없는 타입 — 텍스트 추출 시도
                 text = _extract_text_from_event(event)
                 if text:
@@ -749,6 +759,11 @@ class GeminiBridge:
                 err_msg = event.get("message", event.get("error", str(event)))
                 _emit("system", f"❌ Gemini 오류: {err_msg}", level="error")
             else:
+                # user/input 타입은 Gemini가 입력을 echo하는 이벤트 — 무시
+                if etype in ("user", "input", "human"):
+                    continue
+                if event.get("role") in ("user", "human"):
+                    continue
                 text = _extract_text_from_event(event)
                 if text:
                     full_text += text
