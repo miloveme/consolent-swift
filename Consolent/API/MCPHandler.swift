@@ -501,6 +501,20 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
+                name: "session_debug",
+                description: "세션의 현재 터미널 화면, 어댑터가 추출한 cleanResponse, 스트리밍 베이스라인을 함께 반환합니다. 빈 응답/중복 응답/노이즈 등 TUI 파싱 문제 진단에 사용합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("진단할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
                 name: "session_tunnel_start",
                 description: "세션에 Cloudflare Quick Tunnel을 시작합니다. 터널이 연결되면 외부에서 접근 가능한 URL이 생성됩니다. session_get으로 tunnel_url을 확인할 수 있습니다.",
                 inputSchema: .object([
@@ -630,6 +644,8 @@ final class MCPHandler {
             return try toolSessionApprove(arguments)
         case "session_pending":
             return try toolSessionPending(arguments)
+        case "session_debug":
+            return try toolSessionDebug(arguments)
         case "session_tunnel_start":
             return try toolSessionTunnelStart(arguments)
         case "session_tunnel_stop":
@@ -869,6 +885,43 @@ final class MCPHandler {
         } else {
             return mcpTextResult("대기 중인 승인 요청이 없습니다.")
         }
+    }
+
+    // MARK: - Debug Tools
+
+    private func toolSessionDebug(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        let snap = session.debugSnapshot()
+
+        var sections: [String] = []
+
+        sections.append("""
+        [세션 상태]
+        - name: \(session.name)
+        - status: \(snap.status)
+        - adapter: \(snap.adapterType)
+        """)
+
+        sections.append("""
+        [cleanResponse (어댑터 추출 결과)]
+        \(snap.cleanResponse.isEmpty ? "(비어 있음)" : snap.cleanResponse)
+        """)
+
+        if let baseline = snap.streamBaseline {
+            sections.append("""
+            [streamBaseline (이전 턴 응답 — 현재 턴 델타 계산 기준)]
+            \(baseline.isEmpty ? "(비어 있음)" : baseline)
+            """)
+        } else {
+            sections.append("[streamBaseline]\n(없음 — 스트리밍 미시작 또는 첫 턴)")
+        }
+
+        sections.append("""
+        [헤드리스 터미널 화면 (전체)]
+        \(snap.screenText.isEmpty ? "(비어 있음)" : snap.screenText)
+        """)
+
+        return mcpTextResult(sections.joined(separator: "\n\n"))
     }
 
     // MARK: - Tunnel Tools

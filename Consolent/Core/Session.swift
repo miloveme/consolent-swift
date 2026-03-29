@@ -1084,6 +1084,19 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     /// Headless 터미널 버퍼에서 전체 텍스트를 읽는다 (scrollback 포함).
     /// getScrollInvariantLine()을 사용하여 visible 영역 밖으로 스크롤된 내용도 포함한다.
     /// 이렇게 해야 500행을 초과하는 긴 응답도 완전히 읽을 수 있다.
+    /// MCP/디버그용: 현재 터미널 상태 스냅샷을 반환한다.
+    func debugSnapshot() -> SessionDebugSnapshot {
+        let screenText = readHeadlessBuffer()
+        let cleanText = adapter.cleanResponse(screenText)
+        return SessionDebugSnapshot(
+            screenText: screenText,
+            cleanResponse: cleanText,
+            streamBaseline: streamBaselineText,
+            status: status.rawValue,
+            adapterType: config.cliType.rawValue
+        )
+    }
+
     func readHeadlessBuffer() -> String {
         var lines: [String] = []
         var row = 0
@@ -1094,6 +1107,16 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         return lines.joined(separator: "\n")
     }
 
+}
+
+// MARK: - Debug Snapshot
+
+struct SessionDebugSnapshot {
+    let screenText: String       // 헤드리스 터미널 현재 화면 (ANSI 제거)
+    let cleanResponse: String    // 어댑터가 추출한 응답 본문
+    let streamBaseline: String?  // 현재 턴 스트리밍 베이스라인 (이전 턴 응답)
+    let status: String
+    let adapterType: String
 }
 
 // MARK: - Errors
