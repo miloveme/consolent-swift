@@ -33,13 +33,24 @@ final class MCPHandler {
         // POST /mcp — MCP Streamable HTTP 엔드포인트
         router.post("mcp") { [self] req -> Response in
             let jsonRPC = try req.content.decode(JSONRPCRequest.self)
-            let result = await handleRequest(jsonRPC)
 
             // notification (id == nil) 이면 204 No Content
-            guard let _ = jsonRPC.id else {
+            guard let id = jsonRPC.id else {
+                _ = await handleRequest(jsonRPC)
                 return Response(status: .noContent)
             }
 
+            // tools/call + stream: true 이면 SSE 스트리밍 응답
+            if jsonRPC.method == "tools/call",
+               case .object(let params)? = jsonRPC.params,
+               case .string(let toolName)? = params["name"],
+               toolName == "session_send_message",
+               case .object(let args)? = params["arguments"],
+               args["stream"]?.boolValue == true {
+                return try await handleStreamingToolCall(id: id, arguments: args)
+            }
+
+            let result = await handleRequest(jsonRPC)
             let encoder = JSONEncoder()
             encoder.keyEncodingStrategy = .convertToSnakeCase
             let data = try encoder.encode(result)
@@ -53,13 +64,134 @@ final class MCPHandler {
 
         // GET /mcp — SSE 엔드포인트 (Streamable HTTP 스펙, 현재는 미구현)
         router.get("mcp") { req -> Response in
-            // SSE 스트림은 서버→클라이언트 알림용. 현재는 도구 호출만 지원하므로 비활성.
             return Response(
                 status: .methodNotAllowed,
                 headers: ["Content-Type": "application/json"],
                 body: .init(string: #"{"error":"SSE stream not implemented. Use POST /mcp for tool calls."}"#)
             )
         }
+    }
+
+    // MARK: - Streaming Tool Call
+
+    /// session_send_message의 스트리밍 응답.
+    /// MCP Streamable HTTP 스펙에 따라 SSE로 progress notification + 최종 result를 전송한다.
+    private func handleStreamingToolCall(id: JSONRPCId, arguments: [String: JSONValue]) async throws -> Response {
+        let session: Session
+        do {
+            session = try resolveSession(arguments)
+        } catch {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32602, message: error.localizedDescription)
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        guard let text = arguments["text"]?.stringValue, !text.isEmpty else {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32602, message: "text는 필수 파라미터입니다.")
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        if session.status == .stopped || session.status == .error {
+            let errorResponse = JSONRPCResponse(
+                jsonrpc: "2.0", id: id, result: nil,
+                error: JSONRPCError(code: -32603, message: "세션이 \(session.status.rawValue) 상태입니다. session_start로 재시작 후 시도하세요.")
+            )
+            let data = (try? JSONEncoder().encode(errorResponse)) ?? Data()
+            return Response(
+                status: .ok,
+                headers: ["Content-Type": "application/json"],
+                body: .init(data: data)
+            )
+        }
+
+        let timeout = TimeInterval(arguments["timeout"]?.intValue ?? 300)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+
+        let response = Response(
+            status: .ok,
+            headers: [
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            ]
+        )
+
+        response.body = .init(managedAsyncStream: { writer in
+            let stream = session.sendMessageStreaming(text: text, timeout: timeout)
+            var fullText = ""
+
+            for await event in stream {
+                switch event {
+                case .delta(let chunk):
+                    fullText += chunk
+                    // MCP progress notification — 델타 청크를 실시간 전송
+                    let notification: [String: Any] = [
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": [
+                            "progressToken": "\(id)",
+                            "progress": chunk,
+                            "total": ""
+                        ]
+                    ]
+                    if let data = try? JSONSerialization.data(withJSONObject: notification),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+
+                case .done:
+                    // 최종 tools/call result
+                    let finalResult = JSONRPCResponse(
+                        jsonrpc: "2.0", id: id,
+                        result: .object([
+                            "content": .array([
+                                .object(["type": .string("text"), "text": .string(fullText)])
+                            ])
+                        ]),
+                        error: nil
+                    )
+                    if let data = try? encoder.encode(finalResult),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+
+                case .error(let msg):
+                    let errorResponse = JSONRPCResponse(
+                        jsonrpc: "2.0", id: id, result: nil,
+                        error: JSONRPCError(code: -32603, message: msg)
+                    )
+                    if let data = try? encoder.encode(errorResponse),
+                       let line = String(data: data, encoding: .utf8) {
+                        var buf = ByteBufferAllocator().buffer(capacity: line.utf8.count + 8)
+                        buf.writeString("data: \(line)\n\n")
+                        try await writer.writeBuffer(buf)
+                    }
+                }
+            }
+        })
+
+        return response
     }
 
     // MARK: - JSON-RPC Dispatch
@@ -114,7 +246,7 @@ final class MCPHandler {
         let tools: [MCPToolDefinition] = [
             MCPToolDefinition(
                 name: "session_create",
-                description: "터미널에서 AI CLI 도구 세션을 생성합니다. 지원 CLI: claude-code, codex, gemini. 세션이 ready 상태가 되면 메시지를 보낼 수 있습니다.",
+                description: "터미널에서 AI CLI 도구 세션을 생성합니다. 지원 CLI: claude-code, codex, gemini. PTY 모드(기본) 외에 브릿지 모드(sdk/gemini_stream/codex_app_server)도 지원합니다.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -139,6 +271,50 @@ final class MCPHandler {
                             "type": .string("array"),
                             "items": .object(["type": .string("string")]),
                             "description": .string("CLI에 전달할 추가 인자")
+                        ]),
+                        "channel_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("채널 서버 모드 활성화 (claude-code 전용). MCP 채널 서버로 직접 API 제공. 기본: false")
+                        ]),
+                        "channel_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("채널 서버 HTTP 포트. 기본: 8787")
+                        ]),
+                        "channel_server_name": .object([
+                            "type": .string("string"),
+                            "description": .string("~/.claude.json의 mcpServers 키. 기본: openai-compat")
+                        ]),
+                        "sdk_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Agent SDK 브릿지 모드 활성화 (claude-code 전용). PTY 없이 Claude Agent SDK로 직접 통신. 기본: false")
+                        ]),
+                        "sdk_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("SDK 브릿지 서버 포트. 기본: 8788")
+                        ]),
+                        "sdk_model": .object([
+                            "type": .string("string"),
+                            "description": .string("SDK 모드에서 사용할 모델 (예: claude-sonnet-4-20250514)")
+                        ]),
+                        "sdk_permission_mode": .object([
+                            "type": .string("string"),
+                            "description": .string("SDK 퍼미션 모드: acceptEdits, bypassPermissions. 기본: acceptEdits")
+                        ]),
+                        "gemini_stream_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Gemini Stream 브릿지 모드 활성화 (gemini 전용). 기본: false")
+                        ]),
+                        "gemini_stream_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("Gemini 브릿지 서버 포트. 기본: 8789")
+                        ]),
+                        "codex_app_server_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Codex App Server 브릿지 모드 활성화 (codex 전용). 기본: false")
+                        ]),
+                        "codex_app_server_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("Codex 브릿지 서버 포트. 기본: 8790")
                         ])
                     ]),
                     "required": .array([.string("cli_type")])
@@ -181,14 +357,42 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
-                name: "session_send_message",
-                description: "세션에 메시지를 보내고 응답을 기다립니다. CLI 도구가 응답을 완료할 때까지 대기하는 동기 호출입니다. 타임아웃 기본값은 300초입니다.",
+                name: "session_stop",
+                description: "세션의 CLI 프로세스를 중지합니다. 세션 객체는 유지되므로 session_start로 재시작할 수 있습니다. 완전 삭제는 session_delete를 사용하세요.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "session_id": .object([
                             "type": .string("string"),
-                            "description": .string("메시지를 보낼 세션 ID")
+                            "description": .string("중지할 세션 ID 또는 이름")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_start",
+                description: "중지(stopped) 또는 오류(error) 상태의 세션을 재시작합니다. session_stop으로 중지한 세션이나 오류로 종료된 세션을 다시 연결합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("재시작할 세션 ID 또는 이름")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_send_message",
+                description: "세션에 메시지를 보내고 응답을 기다립니다. stream: true이면 SSE로 델타를 실시간 전송합니다. 타임아웃 기본값은 300초입니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("메시지를 보낼 세션 이름 또는 ID")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -197,6 +401,10 @@ final class MCPHandler {
                         "timeout": .object([
                             "type": .string("integer"),
                             "description": .string("응답 대기 타임아웃 (초). 기본: 300")
+                        ]),
+                        "stream": .object([
+                            "type": .string("boolean"),
+                            "description": .string("SSE 스트리밍 모드. true이면 MCP progress notification으로 델타를 실시간 전송. 기본: false")
                         ])
                     ]),
                     "required": .array([.string("session_id"), .string("text")])
@@ -222,6 +430,24 @@ final class MCPHandler {
                             "description": .string("특수 키 시퀀스: ctrl+c, ctrl+d, enter, escape, tab, up, down, left, right")
                         ])
                     ])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_rename",
+                description: "세션 이름을 변경합니다. 이름은 OpenAI 호환 API의 model 필드로도 사용되므로 변경 시 클라이언트 설정도 함께 업데이트하세요.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("변경할 세션 이름 또는 ID")
+                        ]),
+                        "new_name": .object([
+                            "type": .string("string"),
+                            "description": .string("새 세션 이름 (중복 불가)")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id"), .string("new_name")])
                 ])
             ),
             MCPToolDefinition(
@@ -275,6 +501,83 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
+                name: "session_debug",
+                description: "세션의 현재 터미널 화면, 어댑터가 추출한 cleanResponse, 스트리밍 베이스라인을 함께 반환합니다. 빈 응답/중복 응답/노이즈 등 TUI 파싱 문제 진단에 사용합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("진단할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_tunnel_start",
+                description: "세션에 Cloudflare Quick Tunnel을 시작합니다. 터널이 연결되면 외부에서 접근 가능한 URL이 생성됩니다. session_get으로 tunnel_url을 확인할 수 있습니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("터널을 시작할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_tunnel_stop",
+                description: "세션의 Cloudflare Quick Tunnel을 중지합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("터널을 중지할 세션 이름 또는 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "log_list",
+                description: "Consolent 디버그 로그 파일 목록을 조회합니다. 날짜별 디렉토리와 세션별 JSONL 파일을 반환합니다. 로그는 ~/Library/Logs/Consolent/debug/{날짜}/{세션}.jsonl 형식으로 저장됩니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("조회할 날짜 (yyyy-MM-dd 형식). 생략 시 최근 날짜 디렉토리 목록 반환")
+                        ])
+                    ])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "log_read",
+                description: "특정 디버그 로그 파일을 읽습니다. JSONL 형식으로 각 줄이 JSON 이벤트입니다. 이벤트 타입: session_start, message_sent, screen_buffer, parsing_result, streaming_poll, completion_detected, api_request, api_response, error 등.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("로그 파일 경로 (log_list 결과의 path 값)")
+                        ]),
+                        "tail": .object([
+                            "type": .string("integer"),
+                            "description": .string("마지막 N줄만 읽기. 기본: 전체 읽기 (최대 500줄)")
+                        ]),
+                        "event_filter": .object([
+                            "type": .string("string"),
+                            "description": .string("특정 이벤트 타입만 필터링. 예: parsing_result, completion_detected, error")
+                        ])
+                    ]),
+                    "required": .array([.string("path")])
+                ])
+            ),
+            MCPToolDefinition(
                 name: "config_get",
                 description: "Consolent 앱의 현재 설정을 조회합니다. API 포트, 로그 레벨, CLI 기본값, 터미널 설정 등 모든 설정을 반환합니다.",
                 inputSchema: .object([
@@ -284,7 +587,7 @@ final class MCPHandler {
             ),
             MCPToolDefinition(
                 name: "config_update",
-                description: "Consolent 앱의 설정을 변경합니다. 변경된 설정은 즉시 메모리와 파일 모두에 반영됩니다. 변경 가능한 키: log_level(off/fatal/info/debug), default_cli_type(claude-code/codex/gemini), default_shell, max_concurrent_sessions, session_idle_timeout, font_family, font_size, theme, scrollback_lines, headless_terminal_rows, launch_to_menu_bar, include_raw_output, cwd_per_cli_type 등. 주의: api_port, api_bind 변경은 앱 재시작이 필요합니다.",
+                description: "Consolent 앱의 설정을 변경합니다. 변경된 설정은 즉시 메모리와 파일 모두에 반영됩니다. 변경 가능한 키: log_level(off/fatal/info/debug), bridge_log_level(error/info/debug), default_cli_type(claude-code/codex/gemini), default_shell, max_concurrent_sessions, session_idle_timeout, font_family, font_size, theme, scrollback_lines, headless_terminal_rows, launch_to_menu_bar, include_raw_output, cwd_per_cli_type 등. 주의: api_port, api_bind 변경은 앱 재시작이 필요합니다.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -360,6 +663,12 @@ final class MCPHandler {
             return try toolSessionGet(arguments)
         case "session_delete":
             return try await toolSessionDelete(arguments)
+        case "session_rename":
+            return try toolSessionRename(arguments)
+        case "session_stop":
+            return try toolSessionStop(arguments)
+        case "session_start":
+            return try await toolSessionStart(arguments)
         case "session_send_message":
             return try await toolSessionSendMessage(arguments)
         case "session_input":
@@ -370,6 +679,16 @@ final class MCPHandler {
             return try toolSessionApprove(arguments)
         case "session_pending":
             return try toolSessionPending(arguments)
+        case "session_debug":
+            return try toolSessionDebug(arguments)
+        case "session_tunnel_start":
+            return try toolSessionTunnelStart(arguments)
+        case "session_tunnel_stop":
+            return try toolSessionTunnelStop(arguments)
+        case "log_list":
+            return try toolLogList(arguments)
+        case "log_read":
+            return try toolLogRead(arguments)
         case "config_get":
             return await toolConfigGet()
         case "config_update":
@@ -387,6 +706,11 @@ final class MCPHandler {
             throw MCPError.invalidParameter("cli_type", "지원하지 않는 CLI 타입: \(cliTypeStr). 가능한 값: claude-code, codex, gemini")
         }
 
+        let channelEnabled = (cliType == .claudeCode) ? (args["channel_enabled"]?.boolValue ?? false) : false
+        let sdkEnabled = (cliType == .claudeCode) ? (args["sdk_enabled"]?.boolValue ?? false) : false
+        let geminiStreamEnabled = (cliType == .gemini) ? (args["gemini_stream_enabled"]?.boolValue ?? false) : false
+        let codexAppServerEnabled = (cliType == .codex) ? (args["codex_app_server_enabled"]?.boolValue ?? false) : false
+
         let config = Session.Config(
             name: args["name"]?.stringValue,
             workingDirectory: args["working_directory"]?.stringValue ?? AppConfig.shared.cwd(for: cliType),
@@ -396,24 +720,50 @@ final class MCPHandler {
             autoApprove: args["auto_approve"]?.boolValue ?? false,
             idleTimeout: AppConfig.shared.sessionIdleTimeout,
             env: nil,
-            channelEnabled: false,
-            channelPort: 8787,
-            channelServerName: "openai-compat"
+            channelEnabled: channelEnabled,
+            channelPort: args["channel_port"]?.intValue ?? 8787,
+            channelServerName: args["channel_server_name"]?.stringValue ?? "openai-compat",
+            sdkEnabled: sdkEnabled,
+            sdkPort: args["sdk_port"]?.intValue ?? 8788,
+            sdkModel: args["sdk_model"]?.stringValue,
+            sdkPermissionMode: args["sdk_permission_mode"]?.stringValue ?? "acceptEdits",
+            geminiStreamEnabled: geminiStreamEnabled,
+            geminiStreamPort: args["gemini_stream_port"]?.intValue ?? 8789,
+            codexAppServerEnabled: codexAppServerEnabled,
+            codexAppServerPort: args["codex_app_server_port"]?.intValue ?? 8790
         )
 
         let session = try await sessionManager.createSession(config: config)
 
-        return mcpTextResult("""
-        세션 생성 완료.
-        - session_id: \(session.id)
-        - name: \(session.name)
-        - status: \(session.status.rawValue)
-        - cli_type: \(cliTypeStr)
-        - working_directory: \(config.workingDirectory)
-
-        세션이 ready 상태가 되면 session_send_message로 메시지를 보낼 수 있습니다.
-        현재 상태를 확인하려면 session_get을 사용하세요.
-        """)
+        var lines = [
+            "세션 생성 완료.",
+            "- session_id: \(session.id)",
+            "- name: \(session.name)",
+            "- status: \(session.status.rawValue)",
+            "- cli_type: \(cliTypeStr)",
+            "- working_directory: \(config.workingDirectory)",
+        ]
+        if channelEnabled, let url = session.channelServerURL {
+            lines.append("- mode: 채널 서버")
+            lines.append("- channel_url: \(url)/v1")
+        } else if sdkEnabled, let url = session.sdkServerURL {
+            lines.append("- mode: Agent SDK 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if geminiStreamEnabled, let url = session.geminiStreamServerURL {
+            lines.append("- mode: Gemini Stream 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if codexAppServerEnabled, let url = session.codexAppServerURL {
+            lines.append("- mode: Codex App Server 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else {
+            lines.append("- mode: PTY")
+        }
+        lines += [
+            "",
+            "세션이 ready 상태가 되면 session_send_message로 메시지를 보낼 수 있습니다.",
+            "현재 상태를 확인하려면 session_get을 사용하세요.",
+        ]
+        return mcpTextResult(lines.joined(separator: "\n"))
     }
 
     private func toolSessionList() -> JSONValue {
@@ -425,7 +775,10 @@ final class MCPHandler {
 
         var lines = ["활성 세션 목록 (\(sessions.count)개):"]
         for s in sessions {
-            lines.append("- [\(s.id)] \(s.name) | status: \(s.status.rawValue) | cli: \(s.cliType) | dir: \(s.workingDirectory)")
+            var modeInfo = "PTY"
+            if s.bridgeEnabled, let url = s.bridgeUrl { modeInfo = "브릿지 (\(url)/v1)" }
+            else if s.channelEnabled, let url = s.channelUrl { modeInfo = "채널 (\(url)/v1)" }
+            lines.append("- [\(s.id)] \(s.name) | status: \(s.status.rawValue) | cli: \(s.cliType) | mode: \(modeInfo) | dir: \(s.workingDirectory)")
         }
 
         return mcpTextResult(lines.joined(separator: "\n"))
@@ -442,8 +795,23 @@ final class MCPHandler {
             "- working_directory: \(session.config.workingDirectory)",
             "- cli_type: \(session.config.cliType.rawValue)",
             "- messages_sent: \(session.messageCount)",
-            "- uptime: \(Int(Date().timeIntervalSince(session.createdAt)))초"
+            "- uptime: \(Int(Date().timeIntervalSince(session.createdAt)))초",
         ]
+
+        // 모드 정보
+        if let tunnelUrl = session.tunnelURL {
+            lines.append("- tunnel_url: \(tunnelUrl)")
+        }
+
+        if session.isBridgeMode, let url = session.bridgeServerURL {
+            lines.append("- mode: 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if session.isChannelMode, let url = session.channelServerURL {
+            lines.append("- mode: 채널")
+            lines.append("- channel_url: \(url)/v1")
+        } else {
+            lines.append("- mode: PTY")
+        }
 
         if let pending = session.pendingApproval {
             lines.append("- pending_approval:")
@@ -464,11 +832,37 @@ final class MCPHandler {
         return mcpTextResult("세션 \(session.name) (\(session.id)) 삭제 완료.")
     }
 
+    private func toolSessionRename(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        let oldName = session.name
+        let newName = try requireString(args, "new_name")
+        try sessionManager.renameSession(id: session.id, newName: newName)
+        return mcpTextResult("세션 이름 변경 완료: '\(oldName)' → '\(newName)'")
+    }
+
+    private func toolSessionStop(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        sessionManager.stopSession(id: session.id)
+        return mcpTextResult("세션 \(session.name) (\(session.id)) 중지 완료. session_start로 재시작할 수 있습니다.")
+    }
+
+    private func toolSessionStart(_ args: [String: JSONValue]) async throws -> JSONValue {
+        let session = try resolveSession(args)
+        guard session.status == .stopped || session.status == .error else {
+            return mcpTextResult("세션 \(session.name)은 이미 \(session.status.rawValue) 상태입니다. 중지(stopped) 또는 오류(error) 상태인 세션만 재시작할 수 있습니다.")
+        }
+        try await sessionManager.startSession(id: session.id)
+        return mcpTextResult("세션 \(session.name) (\(session.id)) 재시작 요청 완료. session_get으로 상태를 확인하세요.")
+    }
+
     private func toolSessionSendMessage(_ args: [String: JSONValue]) async throws -> JSONValue {
         let session = try resolveSession(args)
         let text = try requireString(args, "text")
         let timeout = TimeInterval(args["timeout"]?.intValue ?? 300)
 
+        if session.status == .stopped || session.status == .error {
+            throw MCPError.sessionNotReady(session.id, "\(session.status.rawValue) — session_start로 재시작 후 시도하세요.")
+        }
         guard session.status == .ready else {
             throw MCPError.sessionNotReady(session.id, session.status.rawValue)
         }
@@ -533,6 +927,168 @@ final class MCPHandler {
         }
     }
 
+    // MARK: - Debug Tools
+
+    private func toolSessionDebug(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        let snap = session.debugSnapshot()
+
+        var sections: [String] = []
+
+        sections.append("""
+        [세션 상태]
+        - name: \(session.name)
+        - status: \(snap.status)
+        - adapter: \(snap.adapterType)
+        """)
+
+        sections.append("""
+        [cleanResponse (어댑터 추출 결과)]
+        \(snap.cleanResponse.isEmpty ? "(비어 있음)" : snap.cleanResponse)
+        """)
+
+        if let baseline = snap.streamBaseline {
+            sections.append("""
+            [streamBaseline (이전 턴 응답 — 현재 턴 델타 계산 기준)]
+            \(baseline.isEmpty ? "(비어 있음)" : baseline)
+            """)
+        } else {
+            sections.append("[streamBaseline]\n(없음 — 스트리밍 미시작 또는 첫 턴)")
+        }
+
+        sections.append("""
+        [헤드리스 터미널 화면 (전체)]
+        \(snap.screenText.isEmpty ? "(비어 있음)" : snap.screenText)
+        """)
+
+        return mcpTextResult(sections.joined(separator: "\n\n"))
+    }
+
+    // MARK: - Tunnel Tools
+
+    private func toolSessionTunnelStart(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        guard session.status != .terminated else {
+            throw MCPError.sessionNotReady(session.id, "terminated")
+        }
+        sessionManager.startTunnel(sessionId: session.id)
+        return mcpTextResult("""
+        터널 시작 요청 완료. 연결에 수 초가 걸릴 수 있습니다.
+        session_get(session_id: "\(session.name)")으로 tunnel_url을 확인하세요.
+        """)
+    }
+
+    private func toolSessionTunnelStop(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        sessionManager.stopTunnel(sessionId: session.id)
+        return mcpTextResult("세션 '\(session.name)' 터널 중지 완료.")
+    }
+
+    // MARK: - Log Tools
+
+    private func toolLogList(_ args: [String: JSONValue]) throws -> JSONValue {
+        let logDir = DebugLogger.logDirectory
+        let fm = FileManager.default
+
+        if let dateStr = args["date"]?.stringValue {
+            // 특정 날짜 디렉토리의 파일 목록
+            let dateDir = logDir.appendingPathComponent(dateStr)
+            guard fm.fileExists(atPath: dateDir.path) else {
+                return mcpTextResult("로그 디렉토리가 없습니다: \(dateStr)\n로그 레벨을 info 이상으로 설정하면 로그가 생성됩니다.")
+            }
+
+            guard let files = try? fm.contentsOfDirectory(at: dateDir,
+                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else {
+                throw MCPError.invalidParameter("date", "디렉토리를 읽을 수 없습니다: \(dateStr)")
+            }
+
+            let sorted = files
+                .filter { $0.pathExtension == "jsonl" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+            if sorted.isEmpty {
+                return mcpTextResult("[\(dateStr)] 로그 파일 없음")
+            }
+
+            var lines = ["[\(dateStr)] 로그 파일 목록 (\(sorted.count)개):"]
+            for f in sorted {
+                let size = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                let kb = size / 1024
+                lines.append("- \(f.lastPathComponent) (\(kb)KB)")
+                lines.append("  path: \(f.path)")
+            }
+            return mcpTextResult(lines.joined(separator: "\n"))
+
+        } else {
+            // 날짜 디렉토리 목록
+            guard let dirs = try? fm.contentsOfDirectory(at: logDir,
+                includingPropertiesForKeys: nil) else {
+                return mcpTextResult("로그 디렉토리가 비어 있거나 존재하지 않습니다.\n로그 레벨을 info 이상으로 설정하면 로그가 생성됩니다.\n현재 로그 레벨: \(AppConfig.shared.logLevel)")
+            }
+
+            let dateDirs = dirs
+                .filter { $0.hasDirectoryPath }
+                .map { $0.lastPathComponent }
+                .filter { $0.count == 10 && $0.contains("-") }
+                .sorted()
+                .reversed()
+
+            if dateDirs.isEmpty {
+                return mcpTextResult("로그 없음. 현재 log_level: \(AppConfig.shared.logLevel)")
+            }
+
+            var lines = ["디버그 로그 날짜 목록:"]
+            for d in dateDirs {
+                let dayDir = logDir.appendingPathComponent(d)
+                let count = (try? fm.contentsOfDirectory(atPath: dayDir.path))?.filter { $0.hasSuffix(".jsonl") }.count ?? 0
+                lines.append("- \(d) (\(count)개 파일)")
+            }
+            lines.append("")
+            lines.append("특정 날짜 파일 목록: log_list(date: \"yyyy-MM-dd\")")
+            return mcpTextResult(lines.joined(separator: "\n"))
+        }
+    }
+
+    private func toolLogRead(_ args: [String: JSONValue]) throws -> JSONValue {
+        let path = try requireString(args, "path")
+        let tailLines = args["tail"]?.intValue
+        let eventFilter = args["event_filter"]?.stringValue
+        let maxLines = 500
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw MCPError.invalidParameter("path", "파일이 없습니다: \(path)")
+        }
+
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            throw MCPError.invalidParameter("path", "파일을 읽을 수 없습니다: \(path)")
+        }
+
+        var lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        // 이벤트 타입 필터링
+        if let filter = eventFilter, !filter.isEmpty {
+            lines = lines.filter { line in
+                line.contains("\"event\":\"\(filter)\"") || line.contains("\"event\": \"\(filter)\"")
+            }
+        }
+
+        // tail 적용
+        if let tail = tailLines, tail > 0 {
+            lines = Array(lines.suffix(tail))
+        } else if lines.count > maxLines {
+            let dropped = lines.count - maxLines
+            lines = Array(lines.suffix(maxLines))
+            lines.insert("(... 상위 \(dropped)줄 생략. tail 파라미터로 마지막 N줄만 읽을 수 있습니다.)", at: 0)
+        }
+
+        if lines.isEmpty {
+            let filterMsg = eventFilter.map { " (필터: \($0))" } ?? ""
+            return mcpTextResult("로그 내용 없음\(filterMsg)")
+        }
+
+        return mcpTextResult(lines.joined(separator: "\n"))
+    }
+
     // MARK: - Config Tools
 
     private func toolConfigGet() async -> JSONValue {
@@ -578,6 +1134,7 @@ final class MCPHandler {
             "",
             "[Debug]",
             "- log_level: \(cfg.logLevel)",
+            "- bridge_log_level: \(cfg.bridgeLogLevel) (error/info/debug)",
             "- debug_log_retention_days: \(cfg.debugLogRetentionDays)",
             "- debug_log_max_file_size_mb: \(cfg.debugLogMaxFileSizeMB)",
         ]
@@ -676,6 +1233,11 @@ final class MCPHandler {
                     if let v = value.intValue {
                         cfg.debugLogMaxFileSizeMB = v
                         changed.append("debug_log_max_file_size_mb → \(v)")
+                    }
+                case "bridge_log_level":
+                    if let v = value.stringValue {
+                        cfg.bridgeLogLevel = v
+                        changed.append("bridge_log_level → \(v)")
                     }
                 case "api_port":
                     if let v = value.intValue {
@@ -788,15 +1350,16 @@ final class MCPHandler {
         return value
     }
 
-    /// 세션을 ID 또는 이름으로 찾는다. session_id 파라미터에 ID나 이름 모두 사용 가능.
+    /// 세션을 이름 또는 ID로 찾는다. session_id 파라미터에 이름이나 ID 모두 사용 가능.
+    /// 이름이 더 일반적이므로 이름을 먼저 시도하고, 없으면 ID로 폴백한다.
     private func resolveSession(_ args: [String: JSONValue], key: String = "session_id") throws -> Session {
         let value = try requireString(args, key)
-        // 1. ID로 먼저 시도
-        if let session = sessionManager.getSession(id: value) {
+        // 1. 이름으로 먼저 시도
+        if let session = sessionManager.getSession(name: value) {
             return session
         }
-        // 2. 이름으로 시도
-        if let session = sessionManager.getSession(name: value) {
+        // 2. ID로 폴백
+        if let session = sessionManager.getSession(id: value) {
             return session
         }
         throw MCPError.sessionNotFound(value)
