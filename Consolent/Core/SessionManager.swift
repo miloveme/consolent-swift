@@ -143,10 +143,9 @@ final class SessionManager: ObservableObject {
         await preflightDirectoryAccess(entries: entries)
 
         // 1단계: 모든 세션 객체를 .stopped 상태로 등록 → UI에 즉시 전부 표시
-        var channelSessionsToStart: [Session] = []
-        var otherSessionsToStart: [Session] = []
-
-        await MainActor.run {
+        let (channelSessionsToStart, otherSessionsToStart) = await MainActor.run { () -> ([Session], [Session]) in
+            var channelSessionsToStart: [Session] = []
+            var otherSessionsToStart: [Session] = []
             for entry in entries {
                 guard let session = registerRestoredSession(config: entry.config) else {
                     print("[SessionManager] 세션 복원 등록 실패 (\(entry.config.name ?? entry.config.cliType.rawValue)): 최대 세션 수 초과")
@@ -165,6 +164,7 @@ final class SessionManager: ObservableObject {
             restoringTotal = otherSessionsToStart.count + channelSessionsToStart.count
             restoringCurrent = 0
             isRestoring = restoringTotal > 0
+            return (channelSessionsToStart, otherSessionsToStart)
         }
 
         defer {

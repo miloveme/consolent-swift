@@ -2197,7 +2197,7 @@ extension Session {
         // 자동 강제 복구: 충돌이 있고, 설정 ON이며, 이번 세션에서 아직 시도하지 않은 경우
         if conflict != nil && AppConfig.shared.autoForceRecovery && !autoRecoveryAttempted {
             autoRecoveryAttempted = true
-            print("[Session:\(name ?? id.description)] 자동 강제 복구: 포트 \(port) 충돌 프로세스 종료 후 재시작")
+            print("[Session:\(name)] 자동 강제 복구: 포트 \(port) 충돌 프로세스 종료 후 재시작")
             try? await resolvePortConflictAndRestart()
         }
     }
@@ -2388,4 +2388,3 @@ extension Session {
         try await ensureSDKVenv()
     }
 }
-
