@@ -450,6 +450,8 @@ class GeminiBridge:
                 if session_id:
                     logger.info(f"Gemini session_id: {session_id}")
             elif etype in ("message", "content", "chunk", "text", "delta"):
+                if event.get("role") in ("user", "human"):
+                    continue
                 text = _extract_text_from_event(event)
                 if text:
                     full_text += text
@@ -526,6 +528,8 @@ class GeminiBridge:
                 if sid:
                     self.session_id = sid
             elif etype in ("message", "content", "chunk", "text", "delta"):
+                if event.get("role") in ("user", "human"):
+                    continue
                 text = _extract_text_from_event(event)
                 if text:
                     yield text
@@ -743,6 +747,8 @@ class GeminiBridge:
             if etype == "init":
                 session_id = event.get("session_id") or event.get("sessionId")
             elif etype in ("message", "content", "chunk", "text", "delta"):
+                if event.get("role") in ("user", "human"):
+                    continue
                 text = _extract_text_from_event(event)
                 if text:
                     full_text += text
