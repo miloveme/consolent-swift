@@ -543,6 +543,41 @@ final class MCPHandler {
                 ])
             ),
             MCPToolDefinition(
+                name: "log_list",
+                description: "Consolent 디버그 로그 파일 목록을 조회합니다. 날짜별 디렉토리와 세션별 JSONL 파일을 반환합니다. 로그는 ~/Library/Logs/Consolent/debug/{날짜}/{세션}.jsonl 형식으로 저장됩니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("조회할 날짜 (yyyy-MM-dd 형식). 생략 시 최근 날짜 디렉토리 목록 반환")
+                        ])
+                    ])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "log_read",
+                description: "특정 디버그 로그 파일을 읽습니다. JSONL 형식으로 각 줄이 JSON 이벤트입니다. 이벤트 타입: session_start, message_sent, screen_buffer, parsing_result, streaming_poll, completion_detected, api_request, api_response, error 등.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("로그 파일 경로 (log_list 결과의 path 값)")
+                        ]),
+                        "tail": .object([
+                            "type": .string("integer"),
+                            "description": .string("마지막 N줄만 읽기. 기본: 전체 읽기 (최대 500줄)")
+                        ]),
+                        "event_filter": .object([
+                            "type": .string("string"),
+                            "description": .string("특정 이벤트 타입만 필터링. 예: parsing_result, completion_detected, error")
+                        ])
+                    ]),
+                    "required": .array([.string("path")])
+                ])
+            ),
+            MCPToolDefinition(
                 name: "config_get",
                 description: "Consolent 앱의 현재 설정을 조회합니다. API 포트, 로그 레벨, CLI 기본값, 터미널 설정 등 모든 설정을 반환합니다.",
                 inputSchema: .object([
@@ -650,6 +685,10 @@ final class MCPHandler {
             return try toolSessionTunnelStart(arguments)
         case "session_tunnel_stop":
             return try toolSessionTunnelStop(arguments)
+        case "log_list":
+            return try toolLogList(arguments)
+        case "log_read":
+            return try toolLogRead(arguments)
         case "config_get":
             return await toolConfigGet()
         case "config_update":
@@ -942,6 +981,111 @@ final class MCPHandler {
         let session = try resolveSession(args)
         sessionManager.stopTunnel(sessionId: session.id)
         return mcpTextResult("세션 '\(session.name)' 터널 중지 완료.")
+    }
+
+    // MARK: - Log Tools
+
+    private func toolLogList(_ args: [String: JSONValue]) throws -> JSONValue {
+        let logDir = DebugLogger.logDirectory
+        let fm = FileManager.default
+
+        if let dateStr = args["date"]?.stringValue {
+            // 특정 날짜 디렉토리의 파일 목록
+            let dateDir = logDir.appendingPathComponent(dateStr)
+            guard fm.fileExists(atPath: dateDir.path) else {
+                return mcpTextResult("로그 디렉토리가 없습니다: \(dateStr)\n로그 레벨을 info 이상으로 설정하면 로그가 생성됩니다.")
+            }
+
+            guard let files = try? fm.contentsOfDirectory(at: dateDir,
+                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else {
+                throw MCPError.invalidParameter("date", "디렉토리를 읽을 수 없습니다: \(dateStr)")
+            }
+
+            let sorted = files
+                .filter { $0.pathExtension == "jsonl" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+            if sorted.isEmpty {
+                return mcpTextResult("[\(dateStr)] 로그 파일 없음")
+            }
+
+            var lines = ["[\(dateStr)] 로그 파일 목록 (\(sorted.count)개):"]
+            for f in sorted {
+                let size = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                let kb = size / 1024
+                lines.append("- \(f.lastPathComponent) (\(kb)KB)")
+                lines.append("  path: \(f.path)")
+            }
+            return mcpTextResult(lines.joined(separator: "\n"))
+
+        } else {
+            // 날짜 디렉토리 목록
+            guard let dirs = try? fm.contentsOfDirectory(at: logDir,
+                includingPropertiesForKeys: nil) else {
+                return mcpTextResult("로그 디렉토리가 비어 있거나 존재하지 않습니다.\n로그 레벨을 info 이상으로 설정하면 로그가 생성됩니다.\n현재 로그 레벨: \(AppConfig.shared.logLevel)")
+            }
+
+            let dateDirs = dirs
+                .filter { $0.hasDirectoryPath }
+                .map { $0.lastPathComponent }
+                .filter { $0.count == 10 && $0.contains("-") }
+                .sorted()
+                .reversed()
+
+            if dateDirs.isEmpty {
+                return mcpTextResult("로그 없음. 현재 log_level: \(AppConfig.shared.logLevel)")
+            }
+
+            var lines = ["디버그 로그 날짜 목록:"]
+            for d in dateDirs {
+                let dayDir = logDir.appendingPathComponent(d)
+                let count = (try? fm.contentsOfDirectory(atPath: dayDir.path))?.filter { $0.hasSuffix(".jsonl") }.count ?? 0
+                lines.append("- \(d) (\(count)개 파일)")
+            }
+            lines.append("")
+            lines.append("특정 날짜 파일 목록: log_list(date: \"yyyy-MM-dd\")")
+            return mcpTextResult(lines.joined(separator: "\n"))
+        }
+    }
+
+    private func toolLogRead(_ args: [String: JSONValue]) throws -> JSONValue {
+        let path = try requireString(args, "path")
+        let tailLines = args["tail"]?.intValue
+        let eventFilter = args["event_filter"]?.stringValue
+        let maxLines = 500
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw MCPError.invalidParameter("path", "파일이 없습니다: \(path)")
+        }
+
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            throw MCPError.invalidParameter("path", "파일을 읽을 수 없습니다: \(path)")
+        }
+
+        var lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        // 이벤트 타입 필터링
+        if let filter = eventFilter, !filter.isEmpty {
+            lines = lines.filter { line in
+                line.contains("\"event\":\"\(filter)\"") || line.contains("\"event\": \"\(filter)\"")
+            }
+        }
+
+        // tail 적용
+        if let tail = tailLines, tail > 0 {
+            lines = Array(lines.suffix(tail))
+        } else if lines.count > maxLines {
+            let dropped = lines.count - maxLines
+            lines = Array(lines.suffix(maxLines))
+            lines.insert("(... 상위 \(dropped)줄 생략. tail 파라미터로 마지막 N줄만 읽을 수 있습니다.)", at: 0)
+        }
+
+        if lines.isEmpty {
+            let filterMsg = eventFilter.map { " (필터: \($0))" } ?? ""
+            return mcpTextResult("로그 내용 없음\(filterMsg)")
+        }
+
+        return mcpTextResult(lines.joined(separator: "\n"))
     }
 
     // MARK: - Config Tools
