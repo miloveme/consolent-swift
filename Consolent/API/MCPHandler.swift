@@ -114,7 +114,7 @@ final class MCPHandler {
         let tools: [MCPToolDefinition] = [
             MCPToolDefinition(
                 name: "session_create",
-                description: "터미널에서 AI CLI 도구 세션을 생성합니다. 지원 CLI: claude-code, codex, gemini. 세션이 ready 상태가 되면 메시지를 보낼 수 있습니다.",
+                description: "터미널에서 AI CLI 도구 세션을 생성합니다. 지원 CLI: claude-code, codex, gemini. PTY 모드(기본) 외에 브릿지 모드(sdk/gemini_stream/codex_app_server)도 지원합니다.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -139,6 +139,38 @@ final class MCPHandler {
                             "type": .string("array"),
                             "items": .object(["type": .string("string")]),
                             "description": .string("CLI에 전달할 추가 인자")
+                        ]),
+                        "sdk_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Agent SDK 브릿지 모드 활성화 (claude-code 전용). PTY 없이 Claude Agent SDK로 직접 통신. 기본: false")
+                        ]),
+                        "sdk_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("SDK 브릿지 서버 포트. 기본: 8788")
+                        ]),
+                        "sdk_model": .object([
+                            "type": .string("string"),
+                            "description": .string("SDK 모드에서 사용할 모델 (예: claude-sonnet-4-20250514)")
+                        ]),
+                        "sdk_permission_mode": .object([
+                            "type": .string("string"),
+                            "description": .string("SDK 퍼미션 모드: acceptEdits, bypassPermissions. 기본: acceptEdits")
+                        ]),
+                        "gemini_stream_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Gemini Stream 브릿지 모드 활성화 (gemini 전용). 기본: false")
+                        ]),
+                        "gemini_stream_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("Gemini 브릿지 서버 포트. 기본: 8789")
+                        ]),
+                        "codex_app_server_enabled": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Codex App Server 브릿지 모드 활성화 (codex 전용). 기본: false")
+                        ]),
+                        "codex_app_server_port": .object([
+                            "type": .string("integer"),
+                            "description": .string("Codex 브릿지 서버 포트. 기본: 8790")
                         ])
                     ]),
                     "required": .array([.string("cli_type")])
@@ -175,6 +207,34 @@ final class MCPHandler {
                         "session_id": .object([
                             "type": .string("string"),
                             "description": .string("삭제할 세션 ID")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_stop",
+                description: "세션의 CLI 프로세스를 중지합니다. 세션 객체는 유지되므로 session_start로 재시작할 수 있습니다. 완전 삭제는 session_delete를 사용하세요.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("중지할 세션 ID 또는 이름")
+                        ])
+                    ]),
+                    "required": .array([.string("session_id")])
+                ])
+            ),
+            MCPToolDefinition(
+                name: "session_start",
+                description: "중지(stopped) 또는 오류(error) 상태의 세션을 재시작합니다. session_stop으로 중지한 세션이나 오류로 종료된 세션을 다시 연결합니다.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "session_id": .object([
+                            "type": .string("string"),
+                            "description": .string("재시작할 세션 ID 또는 이름")
                         ])
                     ]),
                     "required": .array([.string("session_id")])
@@ -360,6 +420,10 @@ final class MCPHandler {
             return try toolSessionGet(arguments)
         case "session_delete":
             return try await toolSessionDelete(arguments)
+        case "session_stop":
+            return try toolSessionStop(arguments)
+        case "session_start":
+            return try await toolSessionStart(arguments)
         case "session_send_message":
             return try await toolSessionSendMessage(arguments)
         case "session_input":
@@ -387,7 +451,11 @@ final class MCPHandler {
             throw MCPError.invalidParameter("cli_type", "지원하지 않는 CLI 타입: \(cliTypeStr). 가능한 값: claude-code, codex, gemini")
         }
 
-        let config = Session.Config(
+        let sdkEnabled = args["sdk_enabled"]?.boolValue ?? false
+        let geminiStreamEnabled = args["gemini_stream_enabled"]?.boolValue ?? false
+        let codexAppServerEnabled = args["codex_app_server_enabled"]?.boolValue ?? false
+
+        var config = Session.Config(
             name: args["name"]?.stringValue,
             workingDirectory: args["working_directory"]?.stringValue ?? AppConfig.shared.cwd(for: cliType),
             shell: AppConfig.shared.defaultShell,
@@ -398,22 +466,44 @@ final class MCPHandler {
             env: nil,
             channelEnabled: false,
             channelPort: 8787,
-            channelServerName: "openai-compat"
+            channelServerName: "openai-compat",
+            sdkEnabled: sdkEnabled,
+            sdkPort: args["sdk_port"]?.intValue ?? 8788,
+            sdkModel: args["sdk_model"]?.stringValue,
+            sdkPermissionMode: args["sdk_permission_mode"]?.stringValue ?? "acceptEdits",
+            geminiStreamEnabled: geminiStreamEnabled,
+            geminiStreamPort: args["gemini_stream_port"]?.intValue ?? 8789,
+            codexAppServerEnabled: codexAppServerEnabled,
+            codexAppServerPort: args["codex_app_server_port"]?.intValue ?? 8790
         )
-
         let session = try await sessionManager.createSession(config: config)
 
-        return mcpTextResult("""
-        세션 생성 완료.
-        - session_id: \(session.id)
-        - name: \(session.name)
-        - status: \(session.status.rawValue)
-        - cli_type: \(cliTypeStr)
-        - working_directory: \(config.workingDirectory)
-
-        세션이 ready 상태가 되면 session_send_message로 메시지를 보낼 수 있습니다.
-        현재 상태를 확인하려면 session_get을 사용하세요.
-        """)
+        var lines = [
+            "세션 생성 완료.",
+            "- session_id: \(session.id)",
+            "- name: \(session.name)",
+            "- status: \(session.status.rawValue)",
+            "- cli_type: \(cliTypeStr)",
+            "- working_directory: \(config.workingDirectory)",
+        ]
+        if sdkEnabled, let url = session.sdkServerURL {
+            lines.append("- mode: Agent SDK 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if geminiStreamEnabled, let url = session.geminiStreamServerURL {
+            lines.append("- mode: Gemini Stream 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if codexAppServerEnabled, let url = session.codexAppServerURL {
+            lines.append("- mode: Codex App Server 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else {
+            lines.append("- mode: PTY")
+        }
+        lines += [
+            "",
+            "세션이 ready 상태가 되면 session_send_message로 메시지를 보낼 수 있습니다.",
+            "현재 상태를 확인하려면 session_get을 사용하세요.",
+        ]
+        return mcpTextResult(lines.joined(separator: "\n"))
     }
 
     private func toolSessionList() -> JSONValue {
@@ -425,7 +515,10 @@ final class MCPHandler {
 
         var lines = ["활성 세션 목록 (\(sessions.count)개):"]
         for s in sessions {
-            lines.append("- [\(s.id)] \(s.name) | status: \(s.status.rawValue) | cli: \(s.cliType) | dir: \(s.workingDirectory)")
+            var modeInfo = "PTY"
+            if s.bridgeEnabled, let url = s.bridgeUrl { modeInfo = "브릿지 (\(url)/v1)" }
+            else if s.channelEnabled, let url = s.channelUrl { modeInfo = "채널 (\(url)/v1)" }
+            lines.append("- [\(s.id)] \(s.name) | status: \(s.status.rawValue) | cli: \(s.cliType) | mode: \(modeInfo) | dir: \(s.workingDirectory)")
         }
 
         return mcpTextResult(lines.joined(separator: "\n"))
@@ -442,8 +535,19 @@ final class MCPHandler {
             "- working_directory: \(session.config.workingDirectory)",
             "- cli_type: \(session.config.cliType.rawValue)",
             "- messages_sent: \(session.messageCount)",
-            "- uptime: \(Int(Date().timeIntervalSince(session.createdAt)))초"
+            "- uptime: \(Int(Date().timeIntervalSince(session.createdAt)))초",
         ]
+
+        // 모드 정보
+        if session.isBridgeMode, let url = session.bridgeServerURL {
+            lines.append("- mode: 브릿지")
+            lines.append("- bridge_url: \(url)/v1")
+        } else if session.isChannelMode, let url = session.channelServerURL {
+            lines.append("- mode: 채널")
+            lines.append("- channel_url: \(url)/v1")
+        } else {
+            lines.append("- mode: PTY")
+        }
 
         if let pending = session.pendingApproval {
             lines.append("- pending_approval:")
@@ -464,11 +568,29 @@ final class MCPHandler {
         return mcpTextResult("세션 \(session.name) (\(session.id)) 삭제 완료.")
     }
 
+    private func toolSessionStop(_ args: [String: JSONValue]) throws -> JSONValue {
+        let session = try resolveSession(args)
+        sessionManager.stopSession(id: session.id)
+        return mcpTextResult("세션 \(session.name) (\(session.id)) 중지 완료. session_start로 재시작할 수 있습니다.")
+    }
+
+    private func toolSessionStart(_ args: [String: JSONValue]) async throws -> JSONValue {
+        let session = try resolveSession(args)
+        guard session.status == .stopped || session.status == .error else {
+            return mcpTextResult("세션 \(session.name)은 이미 \(session.status.rawValue) 상태입니다. 중지(stopped) 또는 오류(error) 상태인 세션만 재시작할 수 있습니다.")
+        }
+        try await sessionManager.startSession(id: session.id)
+        return mcpTextResult("세션 \(session.name) (\(session.id)) 재시작 요청 완료. session_get으로 상태를 확인하세요.")
+    }
+
     private func toolSessionSendMessage(_ args: [String: JSONValue]) async throws -> JSONValue {
         let session = try resolveSession(args)
         let text = try requireString(args, "text")
         let timeout = TimeInterval(args["timeout"]?.intValue ?? 300)
 
+        if session.status == .stopped || session.status == .error {
+            throw MCPError.sessionNotReady(session.id, "\(session.status.rawValue) — session_start로 재시작 후 시도하세요.")
+        }
         guard session.status == .ready else {
             throw MCPError.sessionNotReady(session.id, session.status.rawValue)
         }
