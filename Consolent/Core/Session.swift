@@ -30,6 +30,21 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
         /// 세션 이름. OpenAI 호환 API의 model 필드로 사용된다.
         /// nil이면 cliType.rawValue가 기본값 (예: "claude-code", "gemini", "codex").
         var name: String? = nil
+
+        /// 동작에 영향을 주는 핵심 설정이 동일한지 비교한다.
+        /// 복원 시 중복 세션 판단에 사용.
+        func hasSameEffectiveConfig(as other: Config) -> Bool {
+            cliType == other.cliType &&
+            workingDirectory == other.workingDirectory &&
+            channelEnabled == other.channelEnabled &&
+            channelPort == other.channelPort &&
+            sdkEnabled == other.sdkEnabled &&
+            sdkPort == other.sdkPort &&
+            geminiStreamEnabled == other.geminiStreamEnabled &&
+            geminiStreamPort == other.geminiStreamPort &&
+            codexAppServerEnabled == other.codexAppServerEnabled &&
+            codexAppServerPort == other.codexAppServerPort
+        }
         var workingDirectory: String
         var shell: String = "/bin/zsh"
         var cliType: CLIType = .claudeCode
@@ -2197,7 +2212,7 @@ extension Session {
         // 자동 강제 복구: 충돌이 있고, 설정 ON이며, 이번 세션에서 아직 시도하지 않은 경우
         if conflict != nil && AppConfig.shared.autoForceRecovery && !autoRecoveryAttempted {
             autoRecoveryAttempted = true
-            print("[Session:\(name ?? id.description)] 자동 강제 복구: 포트 \(port) 충돌 프로세스 종료 후 재시작")
+            print("[Session:\(name)] 자동 강제 복구: 포트 \(port) 충돌 프로세스 종료 후 재시작")
             try? await resolvePortConflictAndRestart()
         }
     }
@@ -2388,4 +2403,3 @@ extension Session {
         try await ensureSDKVenv()
     }
 }
-
