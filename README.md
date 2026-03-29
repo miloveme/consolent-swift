@@ -878,19 +878,44 @@ claude mcp add --transport http consolent http://localhost:9999/mcp \
 
 ### 제공 도구
 
+**세션 관리**
+
 | 도구 | 설명 |
 |------|------|
-| `session_create` | CLI 세션 생성 (claude-code / gemini / codex) |
+| `session_create` | CLI 세션 생성 (claude-code / gemini / codex, PTY / 채널 / SDK / 브릿지 모드) |
 | `session_list` | 활성 세션 목록 조회 |
-| `session_get` | 세션 상세 정보 조회 |
+| `session_get` | 세션 상세 정보 조회 (tunnel_url, bridge_url 포함) |
 | `session_delete` | 세션 종료 및 삭제 |
-| `session_send_message` | 세션에 메시지 전송 후 응답 대기 (동기) |
-| `session_input` | PTY에 원시 입력 주입 (특수 키 포함) |
-| `session_output` | 현재 터미널 출력 버퍼 조회 |
+| `session_stop` | CLI 프로세스 중지 (세션 객체 유지) |
+| `session_start` | 중지(stopped) / 오류(error) 세션 재시작 |
+| `session_rename` | 세션 이름 변경 (OpenAI API model 필드와 동기화) |
+
+**메시지 / 입출력**
+
+| 도구 | 설명 |
+|------|------|
+| `session_send_message` | 세션에 메시지 전송 후 응답 대기. `stream: true`이면 SSE로 델타 실시간 전송 |
+| `session_input` | PTY에 원시 입력 주입 (ctrl+c, enter 등 특수 키 포함) |
+| `session_output` | 현재 터미널 출력 버퍼 조회 (ANSI 제거) |
 | `session_approve` | 대기 중인 승인 요청 처리 |
 | `session_pending` | 승인 대기 목록 조회 |
-| `config_get` | Consolent 설정 조회 |
-| `config_update` | Consolent 설정 변경 |
+
+**디버그 / 진단**
+
+| 도구 | 설명 |
+|------|------|
+| `session_debug` | 현재 screenText / cleanResponse / streamBaseline 스냅샷 — TUI 파싱 문제 진단 |
+| `log_list` | 날짜별 디버그 로그 파일 목록 (`~/Library/Logs/Consolent/debug/`) |
+| `log_read` | JSONL 로그 파일 읽기 (`tail`, `event_filter` 지원) |
+
+**터널 / 설정**
+
+| 도구 | 설명 |
+|------|------|
+| `session_tunnel_start` | Cloudflare Quick Tunnel 시작 |
+| `session_tunnel_stop` | Cloudflare Quick Tunnel 중지 |
+| `config_get` | Consolent 설정 전체 조회 |
+| `config_update` | Consolent 설정 변경 (log_level, font_size, api_port 등) |
 
 ### 제공 리소스
 
@@ -902,17 +927,41 @@ consolent://sessions/{session_id}/output
 
 ### 사용 예시
 
-Claude Code에서 MCP 도구를 통해 새 세션을 만들고 메시지를 보내는 예:
+**기본 — 세션 생성 후 메시지 전송:**
 
 ```
 session_create(cli_type: "claude-code", working_directory: "/my/project")
-→ session_id: "abc123", status: "initializing"
+→ session_id: "s_abc123", name: "claude-code", status: "ready"
 
-session_get(session_id: "abc123")
-→ status: "ready"
-
-session_send_message(session_id: "abc123", text: "이 프로젝트의 구조를 설명해줘")
+session_send_message(session_id: "claude-code", text: "이 프로젝트의 구조를 설명해줘")
 → (Claude Code의 응답 텍스트)
+```
+
+**스트리밍 응답:**
+
+```
+session_send_message(session_id: "claude-code", text: "긴 작업 실행해줘", stream: true)
+→ SSE: data: {"method":"notifications/progress","params":{"progress":"작업 중..."}}
+→ SSE: data: {"result":{"content":[{"text":"완료"}]}}
+```
+
+**TUI 파싱 디버그 — 빈 응답 원인 분석:**
+
+```
+session_debug(session_id: "claude-code")
+→ [cleanResponse] 어댑터 추출 결과
+→ [streamBaseline] 이전 턴 응답 (델타 계산 기준)
+→ [헤드리스 터미널 화면] 원본 화면 전체
+```
+
+**로그 분석:**
+
+```
+log_list()                              → 날짜별 디렉토리 목록
+log_list(date: "2026-03-29")           → 해당 날짜 세션별 파일 목록
+log_read(path: "...", tail: 50)        → 마지막 50줄
+log_read(path: "...", event_filter: "parsing_result")  → 파싱 결과만
+log_read(path: "...", event_filter: "completion_detected")  → 완료 감지 이벤트만
 ```
 
 ---
