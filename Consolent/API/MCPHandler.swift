@@ -538,7 +538,7 @@ final class MCPHandler {
             ),
             MCPToolDefinition(
                 name: "config_update",
-                description: "Consolent 앱의 설정을 변경합니다. 변경된 설정은 즉시 메모리와 파일 모두에 반영됩니다. 변경 가능한 키: log_level(off/fatal/info/debug), default_cli_type(claude-code/codex/gemini), default_shell, max_concurrent_sessions, session_idle_timeout, font_family, font_size, theme, scrollback_lines, headless_terminal_rows, launch_to_menu_bar, include_raw_output, cwd_per_cli_type 등. 주의: api_port, api_bind 변경은 앱 재시작이 필요합니다.",
+                description: "Consolent 앱의 설정을 변경합니다. 변경된 설정은 즉시 메모리와 파일 모두에 반영됩니다. 변경 가능한 키: log_level(off/fatal/info/debug), bridge_log_level(error/info/debug), default_cli_type(claude-code/codex/gemini), default_shell, max_concurrent_sessions, session_idle_timeout, font_family, font_size, theme, scrollback_lines, headless_terminal_rows, launch_to_menu_bar, include_raw_output, cwd_per_cli_type 등. 주의: api_port, api_bind 변경은 앱 재시작이 필요합니다.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -936,6 +936,7 @@ final class MCPHandler {
             "",
             "[Debug]",
             "- log_level: \(cfg.logLevel)",
+            "- bridge_log_level: \(cfg.bridgeLogLevel) (error/info/debug)",
             "- debug_log_retention_days: \(cfg.debugLogRetentionDays)",
             "- debug_log_max_file_size_mb: \(cfg.debugLogMaxFileSizeMB)",
         ]
@@ -1034,6 +1035,11 @@ final class MCPHandler {
                     if let v = value.intValue {
                         cfg.debugLogMaxFileSizeMB = v
                         changed.append("debug_log_max_file_size_mb → \(v)")
+                    }
+                case "bridge_log_level":
+                    if let v = value.stringValue {
+                        cfg.bridgeLogLevel = v
+                        changed.append("bridge_log_level → \(v)")
                     }
                 case "api_port":
                     if let v = value.intValue {
