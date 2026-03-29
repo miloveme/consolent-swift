@@ -2,16 +2,24 @@
 
 > **Playwright for Terminals** — AI 코딩 CLI 도구를 OpenAI-호환 API로 조작하는 macOS 네이티브 앱
 
-Consolent은 Claude Code, Codex CLI, Gemini CLI 등 터미널 기반 AI 코딩 에이전트를 [PTY](#term-pty)(가상 터미널)에서 실행하고, HTTP/WebSocket API로 제어합니다. CLI 도구 입장에서는 100% 사람이 타이핑하는 것과 동일하게 동작합니다.
+Consolent은 Claude Code, Codex CLI, Gemini CLI 등 터미널 기반 AI 코딩 에이전트를 HTTP/WebSocket API로 제어합니다. PTY(가상 터미널) 직접 구동 외에도, Agent SDK·채널 서버·브릿지 모드를 통해 각 CLI에 최적화된 방식으로 연결할 수 있습니다.
 
 ```
-┌─ Your App ──┐     HTTP/WebSocket      ┌─ Consolent ─────────────────────┐
-│             │ ──────────────────────▶ │  API Server (Vapor)             │
-│  웹앱        │  /v1/chat/completions   │    ↓                            │
-│  봇          │                         │  Session Manager                │
-│  스크립트     │                         │    ↓                            │
-│  OpenAI SDK │ ◀────────────────────── │  PTY → claude/codex/gemini CLI  │
-└─────────────┘     JSON Response       └─────────────────────────────────┘
+┌─ Your App ──┐   /v1/chat/completions   ┌─ Consolent ──────────────────────────────────┐
+│  웹앱 / 봇   │ ────────────────────────▶ │  API Server (Vapor)                          │
+│  스크립트     │ ◀──────────────────────── │       │                                      │
+│  OpenAI SDK │   JSON / SSE             │       ▼                                      │
+└─────────────┘                          │  Session Manager                             │
+                                         │       │                                      │
+      직접 요청 ─────────────────────────▶ │       ├─▶ PTY 모드    │ claude / gemini /    │
+      (410 Gone으로 URL 안내)              │       │               │ codex  (TUI 파싱)    │
+                                         │       │                                      │
+                                         │       ├─▶ 채널 서버 모드 │ Claude Code + MCP   │
+                                         │       │   :8787        │ (@miloveme/cc-api)  │
+                                         │       │                                      │
+                                         │       └─▶ Agent 모드   │ sdk_bridge.py       │
+                                         │           :8788        │ (Claude Agent SDK)  │
+                                         └──────────────────────────────────────────────┘
 ```
 
 ## 왜 Consolent인가
