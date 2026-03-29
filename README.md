@@ -4,28 +4,29 @@
 
 Consolent은 Claude Code, Codex CLI, Gemini CLI 등 터미널 기반 AI 코딩 에이전트를 HTTP/WebSocket API로 제어합니다. PTY(가상 터미널) 직접 구동 외에도, Agent SDK·채널 서버·브릿지 모드를 통해 각 CLI에 최적화된 방식으로 연결할 수 있습니다.
 
-```
-┌─ Your App ──┐   /v1/chat/completions   ┌─ Consolent ──────────────────────────────────┐
-│  웹앱 / 봇   │ ────────────────────────▶ │  API Server (Vapor)                          │
-│  스크립트     │ ◀──────────────────────── │       │                                      │
-│  OpenAI SDK │   JSON / SSE             │       ▼                                      │
-└─────────────┘                          │  Session Manager                             │
-                                         │       │                                      │
-      직접 요청 ─────────────────────────▶ │       ├─▶ PTY 모드      │ claude / gemini /  │
-      (410 Gone으로 URL 안내)              │       │                 │ codex  (TUI 파싱)  │
-                                         │       │                                      │
-                                         │       ├─▶ 채널 서버 모드  │ Claude Code + MCP  │
-                                         │       │   :8787          │ (@miloveme/cc-api) │
-                                         │       │                                      │
-                                         │       ├─▶ Agent 모드     │ sdk_bridge.py      │
-                                         │       │   :8788          │ (Claude Agent SDK) │
-                                         │       │                                      │
-                                         │       ├─▶ Gemini 브릿지   │ gemini_bridge.py   │
-                                         │       │   :8789          │ (gemini -p)        │
-                                         │       │                                      │
-                                         │       └─▶ Codex 브릿지    │ codex_bridge.py    │
-                                         │           :8790          │ (JSON-RPC stdio)   │
-                                         └──────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    App["**Your App**\n웹앱 / 봇 / 스크립트\nOpenAI SDK"]
+
+    subgraph Consolent
+        API["API Server\n(Vapor)"]
+        SM["Session Manager"]
+        API --> SM
+    end
+
+    App -- "/v1/chat/completions" --> API
+    API -- "JSON / SSE" --> App
+
+    SM --> PTY["PTY 모드\nclaude / gemini / codex\n(TUI 파싱)"]
+    SM --> CH["채널 서버 모드 :8787\nClaude Code + MCP\n(@miloveme/cc-api)"]
+    SM --> AG["Agent 모드 :8788\nsdk_bridge.py\n(Claude Agent SDK)"]
+    SM --> GB["Gemini 브릿지 :8789\ngemini_bridge.py\n(gemini -p)"]
+    SM --> CB["Codex 브릿지 :8790\ncodex_bridge.py\n(JSON-RPC stdio)"]
+
+    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> CH
+    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> AG
+    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> GB
+    App -. "직접 요청\n(410 Gone으로 URL 안내)" .-> CB
 ```
 
 ## 왜 Consolent인가
