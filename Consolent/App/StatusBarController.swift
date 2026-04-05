@@ -478,22 +478,33 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         showCopyFeedback()
     }
 
-    /// ~/.claude.json에서 MCP 서버별 OPENAI_COMPAT_API_KEY를 읽는다.
+    /// MCP 설정 파일에서 서버별 OPENAI_COMPAT_API_KEY를 읽는다.
+    /// 신규 포맷(~/.mcp.json)과 레거시(~/.claude.json) 양쪽 모두 확인.
     private func readChannelApiKeys() -> [String: String] {
-        let path = NSHomeDirectory() + "/.claude.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let mcpServers = json["mcpServers"] as? [String: Any] else {
-            return [:]
+        var result: [String: String] = [:]
+
+        // 양쪽 파일에서 읽기 (신규 포맷 우선)
+        let paths = [
+            NSHomeDirectory() + "/.mcp.json",
+            NSHomeDirectory() + "/.claude.json"
+        ]
+
+        for path in paths {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let mcpServers = json["mcpServers"] as? [String: Any] else {
+                continue
+            }
+
+            for (name, value) in mcpServers {
+                guard let serverConfig = value as? [String: Any],
+                      let env = serverConfig["env"] as? [String: Any],
+                      let apiKey = env["OPENAI_COMPAT_API_KEY"] as? String,
+                      result[name] == nil else { continue }  // 중복 방지 (신규 포맷 우선)
+                result[name] = apiKey
+            }
         }
 
-        var result: [String: String] = [:]
-        for (name, value) in mcpServers {
-            guard let serverConfig = value as? [String: Any],
-                  let env = serverConfig["env"] as? [String: Any],
-                  let apiKey = env["OPENAI_COMPAT_API_KEY"] as? String else { continue }
-            result[name] = apiKey
-        }
         return result
     }
 

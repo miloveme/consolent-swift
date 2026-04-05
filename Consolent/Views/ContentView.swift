@@ -812,13 +812,31 @@ struct ContentView: View {
 
     /// ~/.claude.json에서 @miloveme/claude-code-api 설정을 자동 감지하여
     /// 서버 이름과 포트를 채운다.
+    /// 신규 포맷 사용 여부. ~/.claude/settings.json 존재 시 true → ~/.mcp.json 사용.
+    private var useNewMcpFormat: Bool {
+        FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude/settings.json")
+    }
+
+    /// MCP 설정 파일 경로. 신규: ~/.mcp.json, 레거시: ~/.claude.json
+    private var mcpConfigPath: String {
+        useNewMcpFormat
+            ? NSHomeDirectory() + "/.mcp.json"
+            : NSHomeDirectory() + "/.claude.json"
+    }
+
+    /// MCP 설정 백업 파일 경로.
+    private var mcpConfigBackupPath: String {
+        mcpConfigPath + ".bk"
+    }
+
     private func detectChannelConfig() {
-        let claudeJsonPath = NSHomeDirectory() + "/.claude.json"
-        guard let data = FileManager.default.contents(atPath: claudeJsonPath),
+        let configPath = mcpConfigPath
+        guard let data = FileManager.default.contents(atPath: configPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let mcpServers = json["mcpServers"] as? [String: Any] else {
             channelConfigFound = false
-            channelConfigError = "~/.claude.json 파일이 없거나 mcpServers 설정이 없습니다."
+            let fileName = useNewMcpFormat ? "~/.mcp.json" : "~/.claude.json"
+            channelConfigError = "\(fileName) 파일이 없거나 mcpServers 설정이 없습니다."
             return
         }
 
@@ -856,27 +874,25 @@ struct ContentView: View {
         channelConfigError = "mcpServers에 @miloveme/claude-code-api 설정이 없습니다."
     }
 
-    /// ~/.claude.json의 mcpServers에 채널 서버 설정을 추가한다.
-    /// 1. 기존 파일을 .claude.json.bk로 백업
-    /// 2. JSON 전체를 파싱 → mcpServers에 항목 추가 → 전체 재작성
+    /// MCP 설정 파일에 채널 서버 설정을 추가한다.
+    /// 신규 포맷: ~/.mcp.json, 레거시: ~/.claude.json
     private func installChannelConfig() {
-        let home = NSHomeDirectory()
-        let claudeJsonPath = home + "/.claude.json"
-        let backupPath = home + "/.claude.json.bk"
-        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
+        let configPath = mcpConfigPath
+        let backupPath = mcpConfigBackupPath
+        let fileUrl = URL(fileURLWithPath: configPath)
         let backupUrl = URL(fileURLWithPath: backupPath)
         let fm = FileManager.default
         let serverName = newSessionChannelServerName
 
         // 1. 기존 파일 백업
-        if fm.fileExists(atPath: claudeJsonPath) {
+        if fm.fileExists(atPath: configPath) {
             try? fm.removeItem(at: backupUrl)
             try? fm.copyItem(at: fileUrl, to: backupUrl)
         }
 
-        // 2. 같은 파일에서 기존 JSON 전체 읽기
+        // 2. 기존 JSON 전체 읽기
         var root: [String: Any]
-        if let data = fm.contents(atPath: claudeJsonPath),
+        if let data = fm.contents(atPath: configPath),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             root = parsed
         } else {
@@ -895,26 +911,23 @@ struct ContentView: View {
         ] as [String: Any]
         root["mcpServers"] = mcpServers
 
-        // 4. 같은 파일에 전체 JSON 재작성
+        // 4. 전체 JSON 재작성
         if let outData = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
             try? outData.write(to: fileUrl)
         }
 
         channelConfigInstalled = true
-
-        // 5. 재감지
         detectChannelConfig()
     }
 
     /// 기존 mcpServers 설정에 API 키만 추가한다.
     private func applyChannelApiKey() {
-        let home = NSHomeDirectory()
-        let claudeJsonPath = home + "/.claude.json"
-        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
-        let backupUrl = URL(fileURLWithPath: home + "/.claude.json.bk")
+        let configPath = mcpConfigPath
+        let fileUrl = URL(fileURLWithPath: configPath)
+        let backupUrl = URL(fileURLWithPath: mcpConfigBackupPath)
         let fm = FileManager.default
 
-        guard let data = fm.contents(atPath: claudeJsonPath),
+        guard let data = fm.contents(atPath: configPath),
               var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               var mcpServers = root["mcpServers"] as? [String: Any],
               var serverConfig = mcpServers[newSessionChannelServerName] as? [String: Any] else {
@@ -936,16 +949,14 @@ struct ContentView: View {
             try? outData.write(to: fileUrl)
         }
 
-        // 재감지
         detectChannelConfig()
     }
 
-    /// Install 이전 상태로 복원. .claude.json.bk → .claude.json
+    /// Install 이전 상태로 복원. 백업 파일에서 복구.
     private func undoChannelConfig() {
-        let home = NSHomeDirectory()
-        let claudeJsonPath = home + "/.claude.json"
-        let backupPath = home + "/.claude.json.bk"
-        let fileUrl = URL(fileURLWithPath: claudeJsonPath)
+        let configPath = mcpConfigPath
+        let backupPath = mcpConfigBackupPath
+        let fileUrl = URL(fileURLWithPath: configPath)
         let backupUrl = URL(fileURLWithPath: backupPath)
         let fm = FileManager.default
 
@@ -955,8 +966,6 @@ struct ContentView: View {
         try? fm.moveItem(at: backupUrl, to: fileUrl)
 
         channelConfigInstalled = false
-
-        // 재감지
         detectChannelConfig()
     }
 }
