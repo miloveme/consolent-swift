@@ -62,6 +62,28 @@ struct TerminalViewWrapper: NSViewRepresentable {
                 terminalView.feed(byteArray: ArraySlice(bytes))
                 terminalView.setNeedsDisplay(terminalView.bounds)
                 coordinator.suppressSendToPTY = false
+
+                // 버퍼 재주입 후 CLI TUI 리프레시.
+                // 같은 사이즈로 PTY resize를 보내면 CLI가 SIGWINCH를 받고
+                // 현재 화면을 최신 상태로 다시 그린다.
+                // Normal buffer의 경우 최하단으로 스크롤.
+                let capturedSession = sessionRef
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak terminalView] in
+                    guard let tv = terminalView else { return }
+                    let terminal = tv.getTerminal()
+                    if terminal.isCurrentBufferAlternate {
+                        // Alternate buffer: PTY resize로 CLI 리프레시
+                        let cols = UInt16(terminal.cols)
+                        let rows = UInt16(terminal.rows)
+                        if cols > 0 && rows > 0 {
+                            capturedSession.ptyProcess.resize(cols: cols, rows: rows)
+                        }
+                    } else {
+                        // Normal buffer: 최하단 스크롤
+                        tv.scrollDown(lines: 999999)
+                    }
+                    tv.setNeedsDisplay(tv.bounds)
+                }
             }
         }
 
@@ -75,7 +97,6 @@ struct TerminalViewWrapper: NSViewRepresentable {
         // 레이아웃 완료 후 터미널 강제 리드로우.
         // makeNSView 시점에는 frame이 .zero일 수 있어서
         // outputBuffer 피드 후에도 화면이 비어 보이는 문제를 해결한다.
-        // (특히 Codex TUI에서 세션 전환 시 발생)
         DispatchQueue.main.async {
             nsView.setNeedsDisplay(nsView.bounds)
         }
@@ -118,7 +139,7 @@ struct TerminalViewWrapper: NSViewRepresentable {
         }
 
         func scrolled(source: TerminalView, position: Double) {
-            // 스크롤 위치 변경
+            session?.savedScrollPosition = position
         }
 
         func clipboardCopy(source: TerminalView, content: Data) {

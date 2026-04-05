@@ -404,7 +404,14 @@ final class APIServer: ObservableObject {
             let body = try req.content.decode(SendMessageRequest.self)
             let timeout = TimeInterval(body.timeout ?? 300)
 
-            return try await session.sendMessage(text: body.text, timeout: timeout)
+            let result = try await session.sendMessage(text: body.text, timeout: timeout)
+            ConversationStore.shared.addTurn(
+                chatKey: "session:\(session.name)",
+                userText: body.text,
+                assistantText: result.response.result,
+                source: .api
+            )
+            return result
         }
 
         // ── Raw Input ──
@@ -622,6 +629,13 @@ final class APIServer: ObservableObject {
                     responseText = buildJSONExtractionError(rawResponse: responseText)
                 }
 
+                ConversationStore.shared.addTurn(
+                    chatKey: "session:\(session.name)",
+                    userText: lastUserMessage,
+                    assistantText: responseText,
+                    source: .api
+                )
+
                 // SSE 형식으로 반환: role → content(전체) → finish → [DONE]
                 let response = Response(
                     status: .ok,
@@ -691,7 +705,10 @@ final class APIServer: ObservableObject {
                     ]
                 )
 
+                let capturedSessionName = session.name
+                let capturedUserMessage = lastUserMessage
                 response.body = .init(managedAsyncStream: { writer in
+                    var fullResponseText = ""
                     // 1. role chunk 전송
                     let roleChunk = OpenAIStreamChunk(
                         id: completionId, object: "chat.completion.chunk",
@@ -713,6 +730,7 @@ final class APIServer: ObservableObject {
                     for await event in eventStream {
                         switch event {
                         case .delta(let text):
+                            fullResponseText += text
                             let sanitized = sanitizeForJSON(text)
                             let contentChunk = OpenAIStreamChunk(
                                 id: completionId, object: "chat.completion.chunk",
@@ -731,6 +749,13 @@ final class APIServer: ObservableObject {
                             }
 
                         case .done:
+                            // 대화 히스토리 저장
+                            ConversationStore.shared.addTurn(
+                                chatKey: "session:\(capturedSessionName)",
+                                userText: capturedUserMessage,
+                                assistantText: fullResponseText,
+                                source: .api
+                            )
                             // finish chunk
                             let finishChunk = OpenAIStreamChunk(
                                 id: completionId, object: "chat.completion.chunk",
@@ -781,6 +806,13 @@ final class APIServer: ObservableObject {
 
             // 비-stream 모드: 일반 JSON
             let result = try await session.sendMessage(text: lastUserMessage, timeout: timeout)
+
+            ConversationStore.shared.addTurn(
+                chatKey: "session:\(session.name)",
+                userText: lastUserMessage,
+                assistantText: result.response.result,
+                source: .api
+            )
 
             let completionId = "chatcmpl-\(result.messageId)"
             let created = Int(Date().timeIntervalSince1970)

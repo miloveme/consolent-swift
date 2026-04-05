@@ -159,6 +159,13 @@ final class MCPHandler {
                     }
 
                 case .done:
+                    // 대화 히스토리 저장
+                    ConversationStore.shared.addTurn(
+                        chatKey: "session:\(session.name)",
+                        userText: text,
+                        assistantText: fullText,
+                        source: .mcp
+                    )
                     // 최종 tools/call result
                     let finalResult = JSONRPCResponse(
                         jsonrpc: "2.0", id: id,
@@ -869,6 +876,13 @@ final class MCPHandler {
 
         let result = try await session.sendMessage(text: text, timeout: timeout)
         let responseText = result.response.result
+
+        ConversationStore.shared.addTurn(
+            chatKey: "session:\(session.name)",
+            userText: text,
+            assistantText: responseText,
+            source: .mcp
+        )
 
         return mcpTextResult(responseText)
     }

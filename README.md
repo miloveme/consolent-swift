@@ -26,6 +26,10 @@ flowchart TB
     SM --> AG["Agent 모드 :8788\nsdk_bridge.py\n(Claude Agent SDK)"]
     SM --> GB["Gemini 브릿지 :8789\ngemini_bridge.py\n(gemini -p)"]
     SM --> CB["Codex 브릿지 :8790\ncodex_bridge.py\n(JSON-RPC stdio)"]
+
+    Telegram["**Telegram Bot**\npolling / webhook"]
+    Telegram --> MS["Messenger Server\n:8800"]
+    MS --> SM
 ```
 
 ## 왜 Consolent인가
@@ -67,6 +71,10 @@ flowchart TB
   - [Gemini 브릿지 모드](#gemini-브릿지-모드)
   - [Codex 브릿지 모드](#codex-브릿지-모드)
 - [MCP 서버](#mcp-서버)
+- [메신저 봇 채널](#메신저-봇-채널)
+  - [Telegram 봇 설정](#telegram-봇-설정)
+  - [봇 관리](#봇-관리)
+- [대화 히스토리](#대화-히스토리)
 - [부가 기능](#부가-기능)
   - [Cloudflare Quick Tunnel](#cloudflare-quick-tunnel)
   - [메뉴바 모드](#메뉴바-모드)
@@ -766,6 +774,55 @@ log_read(path: "...", tail: 50)        → 마지막 50줄
 log_read(path: "...", event_filter: "parsing_result")  → 파싱 결과만
 log_read(path: "...", event_filter: "completion_detected")  → 완료 감지 이벤트만
 ```
+
+---
+
+## 메신저 봇 채널
+
+Consolent 세션을 Telegram 등 메신저 봇으로 연결합니다. API 서버를 거치지 않고 **MessengerServer가 SessionManager에 직접 연결**하여 HTTP 홉 없이 동작합니다.
+
+### Telegram 봇 설정
+
+1. Telegram [@BotFather](https://t.me/BotFather)에서 봇 생성 → 토큰 복사
+2. Consolent 설정 → **메신저** 탭 → **봇 추가**
+3. 봇 이름, Bot Token 입력
+4. **세션 연결**: 드롭다운에서 대상 세션 선택
+5. (선택) **허용 사용자 ID**: 콤마 구분으로 Telegram 사용자 ID 입력 (빈칸 = 모든 사용자)
+6. **연결 테스트**: 토큰 검증 + 허용 사용자에게 인사 메시지 전송
+7. 설정 저장 → 서버 재시작
+
+기본 **polling 모드**로 동작하여 터널/public URL 없이 즉시 사용 가능합니다. Cloudflare 터널 설정 시 webhook 모드로 자동 전환됩니다.
+
+### 봇 관리
+
+- **다중 봇**: 같은 플랫폼에서 여러 봇 등록 가능 (각각 다른 세션에 연결)
+- **허용 사용자**: 봇별 화이트리스트로 무단 접근 차단
+- **시스템 프롬프트**: 봇별 자동 프롬프트 (예: "한국어로 답변해줘")
+- **세션 연결 확인**: 사이드바에서 세션에 연결된 봇 표시, 상세 정보에서 확인
+
+```
+설정 → 메신저 탭
+├── 서버 설정 (포트 8800, 바인딩)
+└── 봇 목록
+    ├── 코딩 봇 (Telegram) → claude-code 세션
+    └── 질문 봇 (Telegram) → gemini 세션
+```
+
+> 현재 Telegram만 지원. WhatsApp, LINE, KakaoTalk, iMessage는 `MessengerChannel` 프로토콜 구현체 추가로 확장 가능.
+
+---
+
+## 대화 히스토리
+
+API, MCP, 메신저, SDK 터미널 뷰를 통한 모든 대화를 SQLite에 영속화합니다.
+
+- **DB 경로**: `~/Library/Application Support/Consolent/conversations.sqlite`
+- **뷰어**: View 메뉴 → **대화 히스토리** (`Cmd+Shift+H`)
+- **필터**: 키워드 검색 + 소스(API/MCP/Messenger) + 역할(사용자/어시스턴트) + 기간
+- **메시지 펼치기**: 더블 클릭으로 펼침/접기, 펼친 상태에서 텍스트 선택 복사 가능
+- **검색 범위**: 대화 선택 시 해당 대화 내 검색, 미선택 시 전체 검색
+
+> PTY 터미널에서 직접 타이핑한 대화는 저장되지 않습니다 (CLI가 내부적으로 컨텍스트 관리).
 
 ---
 
