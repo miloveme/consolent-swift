@@ -73,6 +73,12 @@ struct SDKTerminalView: View {
                 .padding(.vertical, 12)
             }
             .background(Color(nsColor: .windowBackgroundColor))
+            .onAppear {
+                // 세션 전환 시 최하단으로 스크롤
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
             .onChange(of: session.chatMessages.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -317,6 +323,8 @@ struct SDKTerminalView: View {
         attachedFiles = []
         isSending = true
 
+        let capturedText = fullText.trimmingCharacters(in: .newlines)
+        let capturedSessionName = session.name
         Task {
             defer {
                 Task { @MainActor in
@@ -324,7 +332,15 @@ struct SDKTerminalView: View {
                     inputFocused = true   // 응답 완료 후 입력창 포커스 복원
                 }
             }
-            _ = try? await session.sendMessage(text: fullText.trimmingCharacters(in: .newlines))
+            let result = try? await session.sendMessage(text: capturedText)
+            if let result {
+                ConversationStore.shared.addTurn(
+                    chatKey: "session:\(capturedSessionName)",
+                    userText: capturedText,
+                    assistantText: result.response.result,
+                    source: .api
+                )
+            }
         }
     }
 }

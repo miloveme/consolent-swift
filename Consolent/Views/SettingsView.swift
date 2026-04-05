@@ -15,6 +15,8 @@ struct SettingsView: View {
 
     @ObservedObject var config: AppConfig
     @ObservedObject var apiServer: APIServer
+    @ObservedObject var messengerServer: MessengerServer
+    @ObservedObject var messengerConfig: MessengerConfig
     @ObservedObject var sessionManager = SessionManager.shared
 
     @Environment(\.dismiss) private var dismiss
@@ -56,6 +58,12 @@ struct SettingsView: View {
                         Label("브릿지", systemImage: "cpu")
                     }
                     .tag(3)
+
+                messengerTab
+                    .tabItem {
+                        Label("메신저", systemImage: "message")
+                    }
+                    .tag(4)
             }
             .padding()
 
@@ -636,6 +644,169 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Messenger Tab
+
+    @State private var showAddBotSheet = false
+    @State private var editingBotId: String? = nil
+
+    private var messengerTab: some View {
+        Form {
+            Section("상태") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(messengerServer.isRunning ? Color.green : Color.gray)
+                            .frame(width: 10, height: 10)
+                            .shadow(color: messengerServer.isRunning ? .green.opacity(0.4) : .clear, radius: 2)
+
+                        Text(messengerServer.isRunning
+                             ? "메신저 서버 실행중 (\(messengerServer.activeBotCount)개 봇)"
+                             : "메신저 서버 중지됨")
+                            .fontWeight(.medium)
+
+                        Spacer()
+                        Toggle("", isOn: $messengerConfig.enabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+
+                    if let error = messengerServer.serverError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("네트워크 설정") {
+                HStack {
+                    TextField("포트", value: $messengerConfig.port, formatter: NumberFormatter.plain)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 100)
+                    Spacer()
+                }
+
+                Picker("바인딩 주소", selection: $messengerConfig.bind) {
+                    Text("로컬호스트 (127.0.0.1)").tag("127.0.0.1")
+                    Text("모든 인터페이스 (0.0.0.0)").tag("0.0.0.0")
+                }
+                .pickerStyle(.menu)
+            }
+
+            Section {
+                if messengerConfig.bots.isEmpty {
+                    Text("등록된 봇이 없습니다. 봇을 추가하세요.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(messengerConfig.bots) { bot in
+                        messengerBotRow(bot: bot)
+                    }
+                }
+
+                Button {
+                    showAddBotSheet = true
+                } label: {
+                    Label("봇 추가", systemImage: "plus.circle")
+                }
+            } header: {
+                Text("등록된 봇")
+            }
+
+            Section {
+                HStack {
+                    Button("설정 저장") {
+                        messengerConfig.save()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("서버 재시작") {
+                        messengerConfig.save()
+                        Task {
+                            try? await messengerServer.restart(config: messengerConfig)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!messengerConfig.enabled)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .sheet(isPresented: $showAddBotSheet) {
+            MessengerBotEditSheet(
+                messengerConfig: messengerConfig,
+                sessionManager: sessionManager,
+                botConfig: nil
+            )
+        }
+        .sheet(item: Binding(
+            get: { editingBotId.flatMap { id in messengerConfig.bots.first { $0.id == id } } },
+            set: { editingBotId = $0?.id }
+        )) { bot in
+            MessengerBotEditSheet(
+                messengerConfig: messengerConfig,
+                sessionManager: sessionManager,
+                botConfig: bot
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func messengerBotRow(bot: MessengerBotConfig) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(bot.enabled ? Color.green : Color.gray)
+                        .frame(width: 8, height: 8)
+                    Text(bot.name.isEmpty ? bot.channelType.displayName : bot.name)
+                        .fontWeight(.medium)
+                    Text("(\(bot.channelType.displayName))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    if let session = bot.targetSessionName {
+                        Label(session, systemImage: "link")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    } else {
+                        Label("미연결", systemImage: "link.badge.plus")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+
+                    if !bot.allowedUserIds.isEmpty {
+                        Label("\(bot.allowedUserIds.count)명", systemImage: "person.badge.shield.checkmark")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            Spacer()
+
+            Button {
+                editingBotId = bot.id
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.accentColor)
+
+            Button {
+                messengerConfig.removeBot(id: bot.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.red)
+        }
+        .padding(.vertical, 2)
+    }
+
     // MARK: - Cloudflare Tunnel (세션별)
 
     @ViewBuilder
@@ -735,6 +906,258 @@ struct SettingsView: View {
                     .padding(.leading, 20)
             default:
                 EmptyView()
+            }
+        }
+    }
+}
+
+// MARK: - 봇 편집 시트
+
+/// 메신저 봇 추가/편집 시트.
+struct MessengerBotEditSheet: View {
+
+    @ObservedObject var messengerConfig: MessengerConfig
+    @ObservedObject var sessionManager: SessionManager
+
+    /// nil이면 새 봇 추가, 값이 있으면 편집.
+    let botConfig: MessengerBotConfig?
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var channelType: MessengerChannelType = .telegram
+    @State private var enabled: Bool = true
+    @State private var targetSessionName: String = ""
+    @State private var botToken: String = ""
+    @State private var webhookSecret: String = ""
+    @State private var allowedUserIdsText: String = ""
+    @State private var systemPrompt: String = ""
+    @State private var maxHistoryTurns: Int = 10
+    @State private var responseTimeout: Int = 300
+
+    // 연결 테스트 상태
+    @State private var isTesting = false
+    @State private var testResult: (success: Bool, message: String)? = nil
+
+    private var isEditing: Bool { botConfig != nil }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(isEditing ? "봇 편집" : "봇 추가")
+                .font(.headline)
+                .padding()
+
+            Form {
+                Section("기본 정보") {
+                    TextField("봇 이름", text: $name)
+                        .textFieldStyle(.roundedBorder)
+
+                    Picker("플랫폼", selection: $channelType) {
+                        ForEach(MessengerChannelType.allCases.filter { $0.isSupported }, id: \.self) { type in
+                            Text(type.displayName).tag(type)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(isEditing)
+
+                    Toggle("활성화", isOn: $enabled)
+                }
+
+                Section("세션 연결") {
+                    let sessionNames = Array(sessionManager.sessions.values)
+                        .filter { $0.status != .terminated }
+                        .map { $0.name }
+                        .sorted()
+
+                    Picker("대상 세션", selection: $targetSessionName) {
+                        Text("(미연결)").tag("")
+                        ForEach(sessionNames, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Text("이 봇으로 수신된 메시지가 선택한 세션으로 전달됩니다.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("자격증명") {
+                    if channelType == .telegram {
+                        SecureField("Bot Token", text: $botToken)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+
+                        TextField("Webhook Secret (선택사항)", text: $webhookSecret)
+                            .textFieldStyle(.roundedBorder)
+
+                        Text("@BotFather에서 봇을 생성하고 토큰을 입력하세요.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("보안") {
+                    TextField("허용 사용자 ID (콤마 구분)", text: $allowedUserIdsText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+
+                    Text("빈칸이면 모든 사용자 허용. Telegram: @userinfobot으로 ID 확인 가능.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("고급") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("시스템 프롬프트 (선택사항)")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                        TextEditor(text: $systemPrompt)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .scrollContentBackground(.hidden)
+                            .padding(6)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(6)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
+                    }
+
+                    LabeledContent("대화 히스토리") {
+                        HStack {
+                            TextField("", value: $maxHistoryTurns, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 60)
+                            Text("턴")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    }
+
+                    LabeledContent("응답 타임아웃") {
+                        HStack {
+                            TextField("", value: $responseTimeout, formatter: NumberFormatter.plain)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 80)
+                            Text("초")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    }
+                }
+
+                if channelType == .telegram && !botToken.isEmpty {
+                    Section("연결 테스트") {
+                        HStack {
+                            Button {
+                                runConnectionTest()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if isTesting {
+                                        ProgressView().controlSize(.mini)
+                                    }
+                                    Text(isTesting ? "테스트 중..." : "연결 테스트")
+                                }
+                            }
+                            .disabled(isTesting)
+
+                            Spacer()
+                        }
+
+                        if let result = testResult {
+                            Label {
+                                Text(result.message)
+                                    .font(.caption)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                    .foregroundColor(result.success ? .green : .red)
+                            }
+                        }
+
+                        Text("토큰을 검증하고, 허용 사용자가 설정되어 있으면 인사 메시지를 보냅니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Button("취소") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(isEditing ? "저장" : "추가") {
+                    saveBot()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(botToken.isEmpty && channelType == .telegram)
+            }
+            .padding()
+        }
+        .frame(width: 480, height: 660)
+        .onAppear {
+            if let bot = botConfig {
+                name = bot.name
+                channelType = bot.channelType
+                enabled = bot.enabled
+                targetSessionName = bot.targetSessionName ?? ""
+                botToken = bot.credentials["botToken"] ?? ""
+                webhookSecret = bot.credentials["webhookSecret"] ?? ""
+                allowedUserIdsText = bot.allowedUserIds.joined(separator: ", ")
+                systemPrompt = bot.systemPrompt ?? ""
+                maxHistoryTurns = bot.maxHistoryTurns
+                responseTimeout = bot.responseTimeout
+            }
+        }
+    }
+
+    private func saveBot() {
+        var bot = botConfig ?? MessengerBotConfig(channelType: channelType)
+        bot.name = name
+        bot.enabled = enabled
+        bot.targetSessionName = targetSessionName.isEmpty ? nil : targetSessionName
+        bot.systemPrompt = systemPrompt.isEmpty ? nil : systemPrompt
+        bot.maxHistoryTurns = maxHistoryTurns
+        bot.responseTimeout = responseTimeout
+
+        // 자격증명
+        if channelType == .telegram {
+            bot.credentials["botToken"] = botToken
+            bot.credentials["webhookSecret"] = webhookSecret
+        }
+
+        // 허용 사용자 파싱
+        bot.allowedUserIds = allowedUserIdsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        messengerConfig.setBotConfig(bot)
+    }
+
+    private func runConnectionTest() {
+        isTesting = true
+        testResult = nil
+
+        // 현재 입력값으로 임시 봇 설정 구성
+        var tempBot = botConfig ?? MessengerBotConfig(channelType: channelType)
+        tempBot.name = name
+        tempBot.credentials["botToken"] = botToken
+        tempBot.targetSessionName = targetSessionName.isEmpty ? nil : targetSessionName
+        tempBot.allowedUserIds = allowedUserIdsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        Task {
+            let (success, message) = await TelegramChannel.testConnection(botConfig: tempBot)
+            await MainActor.run {
+                testResult = (success, message)
+                isTesting = false
             }
         }
     }

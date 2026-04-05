@@ -8,6 +8,8 @@ struct ConsolentApp: App {
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var config = AppConfig.shared
     @StateObject private var apiServer = APIServer()
+    @StateObject private var messengerServer = MessengerServer()
+    @StateObject private var messengerConfig = MessengerConfig.load()
 
     @Environment(\.openWindow) private var openWindow
 
@@ -16,16 +18,25 @@ struct ConsolentApp: App {
             ContentView(
                 sessionManager: sessionManager,
                 apiServer: apiServer,
-                config: config
+                config: config,
+                messengerConfig: messengerConfig
             )
             .onAppear {
                 startAPIServer()
+                startMessengerServer()
             }
             .onChange(of: config.apiEnabled) { oldValue, newValue in
                 if newValue {
                     startAPIServer()
                 } else {
                     stopAPIServer()
+                }
+            }
+            .onChange(of: messengerConfig.enabled) { oldValue, newValue in
+                if newValue {
+                    startMessengerServer()
+                } else {
+                    stopMessengerServer()
                 }
             }
         }
@@ -69,6 +80,15 @@ struct ConsolentApp: App {
             // ── 설정 메뉴: Cmd+, 감지는 AppDelegate의 NSEvent 로컬 모니터에서 처리 ──
             // CommandGroup(replacing: .appSettings)는 키보드 단축키를 가로채지 못하므로 제거
 
+            // ── View 메뉴 추가 항목 ──
+            CommandGroup(after: .sidebar) {
+                Divider()
+                Button("대화 히스토리") {
+                    openWindow(id: "conversation-history")
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+            }
+
             // ── Help 메뉴 ──
             CommandGroup(replacing: .help) {
                 Button("Consolent User Guide") {
@@ -83,8 +103,15 @@ struct ConsolentApp: App {
 
         // ── 설정 윈도우 ──
         Settings {
-            SettingsView(config: config, apiServer: apiServer)
+            SettingsView(config: config, apiServer: apiServer,
+                         messengerServer: messengerServer, messengerConfig: messengerConfig)
         }
+
+        // ── 대화 히스토리 윈도우 ──
+        Window("대화 히스토리", id: "conversation-history") {
+            ConversationHistoryView()
+        }
+        .defaultSize(width: 800, height: 600)
 
         // ── Help 윈도우 ──
         Window("User Guide", id: "user-guide") {
@@ -153,6 +180,23 @@ struct ConsolentApp: App {
         print("[Consolent] Stopping API server from settings toggle")
         Task {
             await apiServer.stop()
+        }
+    }
+
+    private func startMessengerServer() {
+        guard messengerConfig.enabled else { return }
+        Task {
+            do {
+                try await messengerServer.start(config: messengerConfig)
+            } catch {
+                print("[Consolent] Failed to start messenger server: \(error)")
+            }
+        }
+    }
+
+    private func stopMessengerServer() {
+        Task {
+            await messengerServer.stop()
         }
     }
 

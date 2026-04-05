@@ -6,6 +6,7 @@ struct ContentView: View {
     @ObservedObject var sessionManager = SessionManager.shared
     @ObservedObject var apiServer: APIServer
     @ObservedObject var config = AppConfig.shared
+    @ObservedObject var messengerConfig: MessengerConfig = MessengerConfig()
 
     @Environment(\.openSettings) private var openSettings
 
@@ -131,7 +132,7 @@ struct ContentView: View {
                 List(selection: $sessionManager.selectedSessionId) {
                     ForEach(sessionManager.sessionOrder, id: \.self) { id in
                         if let session = sessionManager.sessions[id] {
-                            SessionRow(session: session, onClose: {
+                            SessionRow(session: session, messengerConfig: messengerConfig, onClose: {
                                 sessionManager.deleteSession(id: session.id)
                             }, onStop: {
                                 sessionManager.stopSession(id: session.id)
@@ -964,6 +965,7 @@ struct ContentView: View {
 
 struct SessionDetailView: View {
     @ObservedObject var session: Session
+    @ObservedObject var messengerConfig: MessengerConfig
     @Environment(\.dismiss) private var dismiss
 
     private let dateFormatter: DateFormatter = {
@@ -1050,6 +1052,20 @@ struct SessionDetailView: View {
                             detailRow("URL", tunnelURL)
                         }
                     }
+
+                    let connectedBots = messengerConfig.botsForSession(name: session.name)
+                    if !connectedBots.isEmpty {
+                        detailSection("연결된 메신저 봇") {
+                            ForEach(connectedBots) { bot in
+                                detailRow(bot.channelType.displayName,
+                                          bot.name.isEmpty ? "(이름 없음)" : bot.name)
+                                if !bot.allowedUserIds.isEmpty {
+                                    detailRow("허용 사용자", bot.allowedUserIds.joined(separator: ", "))
+                                }
+                                detailRow("활성", bot.enabled ? "켜짐" : "꺼짐")
+                            }
+                        }
+                    }
                 }
                 .padding()
             }
@@ -1097,6 +1113,7 @@ struct SessionDetailView: View {
 
 struct SessionRow: View {
     @ObservedObject var session: Session
+    @ObservedObject var messengerConfig: MessengerConfig
     var onClose: () -> Void
     var onStop: (() -> Void)? = nil
     var onStart: (() -> Void)? = nil
@@ -1231,6 +1248,20 @@ struct SessionRow: View {
                     }
                     .help("Codex Bridge Server URL — 클릭하여 복사")
                 }
+
+                // 연결된 메신저 봇 표시
+                let connectedBots = messengerConfig.botsForSession(name: session.name)
+                ForEach(connectedBots) { bot in
+                    HStack(spacing: 4) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.caption2)
+                            .foregroundColor(.indigo)
+                        Text(bot.name.isEmpty ? bot.channelType.displayName : bot.name)
+                            .font(.caption2)
+                            .foregroundColor(.indigo)
+                    }
+                    .help("메신저 봇 연결됨 — 설정에서 관리")
+                }
             }
 
             Spacer()
@@ -1286,7 +1317,7 @@ struct SessionRow: View {
             }
         }
         .sheet(isPresented: $showDetails) {
-            SessionDetailView(session: session)
+            SessionDetailView(session: session, messengerConfig: messengerConfig)
         }
         .alert("세션 종료", isPresented: $showCloseAlert) {
             Button("취소", role: .cancel) {}

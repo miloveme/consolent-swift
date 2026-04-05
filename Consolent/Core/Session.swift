@@ -125,6 +125,13 @@ final class Session: ObservableObject, Identifiable, @unchecked Sendable {
     /// SDK 모드 채팅 메시지 목록 (버블 UI용)
     @Published private(set) var chatMessages: [ChatMessage] = []
 
+    /// 터미널 스크롤 위치 (0.0=최상단, 1.0=최하단). 세션 전환 시 복원용.
+    var savedScrollPosition: Double? = nil
+
+    /// SDK 채팅 뷰에서 마지막으로 보이던 메시지 ID. 세션 전환 시 복원용.
+    /// nil이면 최하단으로 스크롤.
+    var lastVisibleMessageId: UUID? = nil
+
     /// 터미널 뷰에 표시할 출력 콜백
     var onTerminalOutput: ((Data) -> Void)?
 
